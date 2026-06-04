@@ -1,18 +1,22 @@
 """
-符号计算审校 Agent 测试界面
+三 Agent 校对架构
 
-显示 ReAct 循环中每一步的完整日志 + 最终审校报告。
+Agent 1 (校对): 完整题目 → 审校 Step 1-4
+Agent 2 (求解): 纯题干+图 → 独立解题全过程
+Agent 3 (校验+总结): A1+A2+题目 → Step 5-6
+
+A1 + A2 并行 → A3 串行
 """
 import base64
 import json
 import os
-import sys
 import time
 import traceback
+import threading
 
 import streamlit as st
 
-st.set_page_config(page_title="物理审校 Agent 测试", page_icon="🔬", layout="wide")
+st.set_page_config(page_title="物理审校 Agent", page_icon="🔬", layout="wide")
 
 # ---- 侧边栏 ----
 with st.sidebar:
@@ -23,21 +27,24 @@ with st.sidebar:
         with open(config_path, "r", encoding="utf-8") as f:
             saved_config = json.load(f)
 
-    api_url = st.text_input(
-        "API URL", value=saved_config.get("api_url", ""),
-        placeholder="https://ark.cn-beijing.volces.com/api/v3/",
-    )
+    api_url = st.text_input("API URL", value=saved_config.get("api_url", ""))
     api_key = st.text_input("API Key", value=saved_config.get("api_key", ""), type="password")
     model_name = st.text_input("Model", value=saved_config.get("model", "doubao-seed-2-0-pro-260215"))
     temperature = st.slider("Temperature", 0.0, 1.0, 0.3, 0.05)
-    max_iterations = st.number_input("最大 ReAct 轮数", 1, 20, 5, 1)
 
     st.divider()
-    st.caption("6 工具: evaluate | solve | equality | simplify | physics_formula | dimensional")
+    st.header("数据")
+    st.session_state.setdefault("agent1_logs", [])
+    st.session_state.setdefault("agent2_logs", [])
+    st.session_state.setdefault("agent3_logs", [])
+    st.session_state.setdefault("agent1_result", "")
+    st.session_state.setdefault("agent2_result", "")
+    st.session_state.setdefault("agent3_result", "")
+    st.session_state.setdefault("final_report", "")
 
-# ---- 标题区 ----
-st.title("🔬 符号计算审校 Agent 测试")
-st.caption("ReAct 循环 · doubao + SymPy 沙箱 · 6 个数学工具")
+# ---- 标题 ----
+st.title("🔬 三 Agent 物理审校")
+st.caption("A1校对(1-4) ∥ A2求解 → A3校验+总结(5-6)")
 
 # ---- 输入区 ----
 with st.expander("📝 题目输入", expanded=True):
@@ -46,41 +53,21 @@ with st.expander("📝 题目输入", expanded=True):
         problem_text = st.text_area(
             "题目内容（Markdown）",
             value=st.session_state.get("problem_text", """## 第1题
-**例1** 一辆汽车从静止开始以恒定加速度运动，经过5秒后速度达到20 m/s。
-求：(1) 汽车的加速度；(2) 前5秒内的位移。
-
-**解析** (1) 由 v = v₀ + at，v₀=0, t=5, v=20：
-加速度 a = v/t = 20/5 = 4 m/s²
-
-(2) 位移 s = v₀t + ½at² = 0 + ½×4×25 = 50 m
-
-**答案** (1) 4 m/s²; (2) 50 m"""),
+一辆汽车从静止开始以加速度a=4m/s²运动，经过5秒。
+求：(1) 末速度；(2) 位移。
+**解析** v = a*t = 4*5 = 20 m/s。s = ½at² = 50 m
+**答案** (1) 20 m/s; (2) 50 m"""),
             height=260,
         )
     with col_b:
-        uploaded_files = st.file_uploader(
-            "配图（可选）", type=["png", "jpg", "jpeg"], accept_multiple_files=True,
-        )
-
+        uploaded_files = st.file_uploader("配图（可选）", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
         st.divider()
-        st.caption("快速加载预设题目：")
+        st.caption("快捷测试题：")
         quick = {
-            "匀加速运动": """## 第1题
-一辆汽车从静止开始以加速度a=4m/s²运动，经过5秒。
-求：(1) 末速度；(2) 位移。
-**答案** (1) 20 m/s; (2) 50 m""",
-            "竖直上抛": """## 第2题
-质量为2 kg的物体从地面以10 m/s初速度竖直上抛。
-求最高点的机械能。(g=10 m/s²)
-**答案** 100 J""",
-            "欧姆定律": """## 第3题
-电阻10Ω的导体两端加220V电压。
-求：(1) 电流；(2) 电功率。
-**答案** (1) 22 A; (2) 4840 W""",
-            "自由落体": """## 第4题
-物体从80m高处自由落下。(g=10m/s²)
-求：(1) 落地时间；(2) 落地速度。
-**答案** (1) 4 s; (2) 40 m/s""",
+            "匀加速": "一辆汽车从静止开始以加速度a=4m/s²运动，经过5秒。求：(1) 末速度；(2) 位移。\n**解析** v=4*5=20m/s。s=½*4*25=50m\n**答案** (1)20m/s;(2)50m",
+            "竖直上抛": "质量为2kg的物体从地面以10m/s初速度竖直上抛。求最高点机械能。(g=10m/s²)\n**解析** E=½mv²=½*2*100=100J\n**答案** 100J",
+            "欧姆定律": "电阻10Ω的导体两端加220V电压。求：(1)电流；(2)电功率。\n**解析** I=U/R=22A。P=UI=4840W\n**答案** (1)22A;(2)4840W",
+            "自由落体": "物体从80m高处自由落下。(g=10m/s²)求：(1)落地时间；(2)落地速度。\n**解析** t=√(2h/g)=4s。v=gt=40m/s\n**答案** (1)4s;(2)40m/s",
         }
         for label, text in quick.items():
             if st.button(label, use_container_width=True):
@@ -93,134 +80,11 @@ with st.expander("📝 题目输入", expanded=True):
 
 # ---- 结果区 ----
 st.divider()
-tab_report, tab_logs, tab_solver = st.tabs(["📋 最终校对报告", "🔍 主Agent 审校日志", "🤖 子Agent 独立求解日志"])
+tab_report, tab_a1, tab_a2, tab_a3 = st.tabs([
+    "📋 最终校对报告", "🔍 A1 校对日志", "🤖 A2 求解日志", "⚖️ A3 校验日志"
+])
 
-# ---- 状态管理 ----
-if "logs" not in st.session_state:
-    st.session_state.logs = []
-if "solver_logs" not in st.session_state:
-    st.session_state.solver_logs = []
-if "final_report" not in st.session_state:
-    st.session_state.final_report = ""
-
-
-def add_log(level, title, detail="", elapsed_ms=0):
-    st.session_state.logs.append({
-        "level": level, "title": title, "detail": detail,
-        "elapsed_ms": elapsed_ms, "time": time.time(),
-    })
-
-
-def build_logs_text(logs=None):
-    """将所有日志格式化为纯文本"""
-    if logs is None:
-        logs = st.session_state.logs
-    lines = []
-    for log in logs:
-        lv = log["level"]
-        title = log["title"]
-        detail = log["detail"]
-        elapsed = log.get("elapsed_ms", 0)
-        if lv == "info":
-            lines.append(f"[INFO] {title}" + (f" ({elapsed}ms)" if elapsed else ""))
-            if detail:
-                lines.append(f"  {detail[:300]}")
-        elif lv == "tool_call":
-            lines.append(f"[TOOL] {title}")
-            lines.append(f"  args: {detail}")
-        elif lv == "tool_result":
-            lines.append(f"[RESULT] {title}" + (f" ({elapsed}ms)" if elapsed else ""))
-            lines.append(f"  {detail}")
-        elif lv == "sandbox":
-            lines.append(f"[SANDBOX] {title}\n{detail}")
-        elif lv == "llm_output":
-            lines.append(f"[LLM] {detail[:300]}...")
-        elif lv == "error":
-            lines.append(f"[ERROR] {title}\n{detail[:500]}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-def render_logs():
-    with tab_logs:
-        if not st.session_state.logs:
-            st.info("点击「开始审校」后这里会显示每一步的执行日志")
-            return
-
-        # 一键复制按钮
-        logs_text = build_logs_text()
-        col_copy, col_empty = st.columns([1, 3])
-        with col_copy:
-            st.download_button(
-                "📋 一键导出日志", data=logs_text,
-                file_name=f"review_log_{time.strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain", use_container_width=True,
-            )
-
-        for log in st.session_state.logs:
-            lv = log["level"]
-            if lv == "info":
-                st.text(f"ℹ️ {log['title']}" + (f" ({log['elapsed_ms']}ms)" if log["elapsed_ms"] else ""))
-                if log["detail"]:
-                    st.caption(log["detail"][:200])
-            elif lv == "tool_call":
-                with st.expander(f"🔧 {log['title']}", expanded=False):
-                    st.code(log["detail"], language="json")
-            elif lv == "tool_result":
-                with st.expander(f"📊 {log['title']}", expanded=False):
-                    st.code(log["detail"], language="json")
-                    if log.get("elapsed_ms"):
-                        st.caption(f"⏱ {log['elapsed_ms']}ms")
-            elif lv == "sandbox":
-                with st.expander(f"🖥 {log['title']}", expanded=False):
-                    st.code(log["detail"], language="python")
-            elif lv == "llm_output":
-                st.caption("💬 LLM 输出片段（完整报告见「最终校对报告」标签页）")
-            elif lv == "error":
-                st.error(f"{log['title']}\n{log['detail'][:500]}")
-
-
-SYSTEM_PROMPT = """\
-你是资深高中物理教研员，负责对物理题目进行严格校对。你有数学工具可以调用。
-
-## 审校流程
-1-3. 文字、公式符号、题干严谨性检查（无需工具）
-4. 逐步骤跟踪题目解析过程，对每步推导调用工具验算
-5. 将用户消息末尾附带的子Agent独立求解结果、题目解析、题目答案进行三方交叉比对，给出综合结论
-6. 校对总结：问题等级（无问题/轻微/一般/严重错误）
-
-## 规则
-- check_equality 验证表达式等价，solve_physics_formula 验证公式重排
-- dimensional_analysis 验证量纲一致性
-- 禁止编造数值代入
-"""
-
-
-@st.cache_resource
-def get_agent():
-    from sympy_tools import get_tools_for_langgraph
-    return get_tools_for_langgraph()
-
-
-def build_llm():
-    from langchain_openai import ChatOpenAI
-    return ChatOpenAI(
-        model=model_name, openai_api_key=api_key,
-        openai_api_base=api_url, temperature=temperature, timeout=300,
-    )
-
-
-def build_image_content(uploaded_file) -> dict | None:
-    data = uploaded_file.getvalue()
-    if len(data) > 10 * 1024 * 1024:
-        st.warning(f"图片 {uploaded_file.name} >10MB，已跳过")
-        return None
-    mime = uploaded_file.type or "image/png"
-    b64 = base64.b64encode(data).decode("utf-8")
-    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-
-
-# 题干提取：遇到这些标记之前的内容就是"只含题干不含解析"
+# ---- 题干提取 ----
 _PROBLEM_DELIMITERS = [
     "**解析**", "**解答**", "**解：**", "**解:**", "**解：", "**答案**",
     "## 解析", "## 解答", "## 答案",
@@ -231,7 +95,6 @@ _PROBLEM_DELIMITERS = [
 
 
 def extract_problem_only(text: str) -> str:
-    """从完整题目文本中提取纯题干（去掉解析和答案部分）"""
     best_idx = len(text)
     for delim in _PROBLEM_DELIMITERS:
         idx = text.find(delim)
@@ -240,106 +103,192 @@ def extract_problem_only(text: str) -> str:
     return text[:best_idx].strip()
 
 
-SOLVER_PROMPT = """\
-你是高中物理教师，负责独立求解物理题。你有数学工具可以调用。
+# ---- Log helpers (thread-safe) ----
+def _append_log(logs: list, level: str, title: str, detail: str = "", elapsed_ms: int = 0):
+    logs.append({"level": level, "title": title, "detail": detail, "elapsed_ms": elapsed_ms})
+
+
+def render_agent_logs(logs: list, prefix: str):
+    if not logs:
+        st.info("暂无日志")
+        return
+    for log in logs:
+        lv, title, detail, elapsed = log["level"], log["title"], log.get("detail", ""), log.get("elapsed_ms", 0)
+        if lv == "info":
+            st.text(f"ℹ️  {title}" + (f" ({elapsed}ms)" if elapsed else ""))
+            if detail:
+                st.caption(detail[:200])
+        elif lv == "tool_call":
+            with st.expander(f"🔧 {title}", expanded=False):
+                st.code(detail, language="json")
+        elif lv == "tool_result":
+            with st.expander(f"📊 {title}", expanded=False):
+                st.code(detail, language="json")
+                if elapsed:
+                    st.caption(f"⏱ {elapsed}ms")
+        elif lv == "sandbox":
+            with st.expander(f"🖥 {title}", expanded=False):
+                st.code(detail, language="python")
+        elif lv == "llm_output":
+            pass
+        elif lv == "error":
+            st.error(f"{title}\n{detail[:500]}")
+
+
+# ---- Three Prompts ----
+
+PROOFREAD_PROMPT = """\
+你是资深高中物理教研员。你有数学工具可以调用。
+
+## 任务：对题目进行审校，输出六段报告的前 4 段
+
+1. 文字内容校对：错别字、漏字、语病、标点
+2. 公式与符号格式校对：物理公式、单位、矢量符号、上下标
+3. 题干与情景严谨性评估：物理情景、条件完整性
+4. 解析内容审核：逐步骤跟踪题目解析过程，每步推导都用工具验算
+   - 用 check_equality 验证等价变换
+   - 用 solve_physics_formula 验证公式重排
+   - 用 simplify_expression 验证化简
+   - 用 dimensional_analysis 验证量纲
+   - 用 magnetic_deflection 求解几何参数
 
 ## 规则
-1. 分析物理情景，写出推导过程和表达式
-2. 遇到具体计算时调用工具，用工具返回的结果验证你的推导
-3. 禁止编造数值代入，禁止发明不存在的函数名
+- 禁止编造数值代入
+- 遇到计算必须调工具
+"""
+
+SOLVER_PROMPT = """\
+你是高中物理教师，独立求解物理题。你有数学工具可以调用。
+
+## 规则
+1. 只看题干，不看已有解析
+2. 分析物理情景，写出推导过程
+3. 遇到计算时调用工具，用工具返回的结果验证
+4. 禁止编造数值代入，禁止发明不存在的函数名
 
 ## 工具
 check_equality / simplify_expression / solve_equation / solve_physics_formula / dimensional_analysis / compute_limit / evaluate_expression / geometry_construct / geometry_measure / vector_operations / magnetic_deflection
 """
 
+ARBITER_PROMPT = """\
+你是物理老师，正在批改一道题。你手上有三份材料：
+1. 题目原文（含标准答案）
+2. 一位学生的解答（独立完成，从未看过标准答案）
+3. 一份对题目文字/符号/格式/解析的初步审校结果
 
-def run_solver(problem_text: str, images: list | None = None, logs: list | None = None) -> str:
-    """在干净的对话上下文中独立求解题目。返回求解过程和答案。"""
+## 任务：判断答案正确性并给出校对总结
+
+**规则：**
+1. 比较学生解答和标准答案的最终结果
+2. 不需要重新审校文字、符号、格式——那些已经在"初步审校结果"中完成了
+3. **如果学生对、标准答案对**：输出学生的完整解答过程作为正确参考
+4. **如果学生对、标准答案错**：输出学生的解答过程，在总结中标注"标准答案有误，学生答案正确"
+5. **如果学生错、标准答案对**：输出标准答案的解答过程，在总结中指出学生错在哪里
+6. **如果两者都错**：你亲自给出正确解答，指出双方各自的问题
+7. 判断完成后，给出校对总结（问题等级：无问题/轻微/一般/严重错误）
+
+## 输出格式
+## 5. 答案正确性校验
+（学生答案 vs 标准答案的对比判断，最终采纳的解答过程）
+
+## 6. 校对总结
+（问题等级 + 最终结论）
+"""
+
+
+# ---- Agent 图工厂 ----
+@st.cache_resource
+def get_agent():
+    from sympy_tools import get_tools_for_langgraph
+    return get_tools_for_langgraph()
+
+
+def build_llm():
+    from langchain_openai import ChatOpenAI
+    return ChatOpenAI(model=model_name, openai_api_key=api_key, openai_api_base=api_url, temperature=temperature, timeout=300)
+
+
+def build_image_content(uploaded_file) -> dict | None:
+    data = uploaded_file.getvalue()
+    if len(data) > 10 * 1024 * 1024:
+        return None
+    mime = uploaded_file.type or "image/png"
+    b64 = base64.b64encode(data).decode("utf-8")
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
+def _run_agent(user_content: list, system_prompt: str, logs: list, with_tools: bool = True) -> str:
+    """通用 Agent 执行器：构建 LangGraph ReAct 循环，收集日志，返回最终文本输出"""
     from langgraph.graph import StateGraph, MessagesState, START, END
     from langgraph.prebuilt import ToolNode
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
-    if logs is None:
-        logs = []
-
     llm = build_llm()
     tools = get_agent()
-    llm_with_tools = llm.bind_tools(tools)
-    tool_node = ToolNode(tools)
+    llm_bound = llm.bind_tools(tools) if with_tools else llm
+    tool_node = ToolNode(tools) if with_tools else None
 
     def _agent(state):
         t0 = time.monotonic()
-        resp = llm_with_tools.invoke(state["messages"])
+        msgs = [SystemMessage(content=system_prompt)] + list(state["messages"])
+        resp = llm_bound.invoke(msgs)
         elapsed = int((time.monotonic() - t0) * 1000)
         tc_count = len(resp.tool_calls) if hasattr(resp, "tool_calls") and resp.tool_calls else 0
-        logs.append({"level": "info", "title": f"子Agent LLM 响应 ({elapsed}ms)", "detail": f"tool_calls={tc_count}", "elapsed_ms": elapsed})
+        _append_log(logs, "info", f"LLM ({elapsed}ms)", f"tool_calls={tc_count}")
         if hasattr(resp, "tool_calls") and resp.tool_calls:
             for tc in resp.tool_calls:
-                logs.append({"level": "tool_call", "title": tc["name"], "detail": json.dumps(tc.get("args", {}), ensure_ascii=False, indent=2), "elapsed_ms": 0})
+                _append_log(logs, "tool_call", tc["name"], json.dumps(tc.get("args", {}), ensure_ascii=False, indent=2))
         return {"messages": [resp]}
 
     def _route(state):
         last = state["messages"][-1]
-        if isinstance(last, AIMessage) and last.tool_calls:
+        if with_tools and isinstance(last, AIMessage) and last.tool_calls:
             return "tools"
         return END
 
     graph = StateGraph(MessagesState)
-    graph.add_node("solver", _agent)
-    graph.add_node("tools", tool_node)
-    graph.add_edge(START, "solver")
-    graph.add_conditional_edges("solver", _route)
-    graph.add_edge("tools", "solver")
+    graph.add_node("agent", _agent)
+    if with_tools:
+        graph.add_node("tools", tool_node)
+    graph.add_edge(START, "agent")
+    graph.add_conditional_edges("agent", _route)
+    if with_tools:
+        graph.add_edge("tools", "agent")
 
-    user_content = [{"type": "text", "text": f"请独立求解下面这道物理题：\n\n{problem_text}"}]
-    if images:
-        for img in images:
-            user_content.append(img)
-
-    compiled = graph.compile()
+    initial = {"messages": [SystemMessage(content=system_prompt), HumanMessage(content=user_content)]}
     output_parts = []
-    try:
-        for event in compiled.stream(
-            {"messages": [SystemMessage(content=SOLVER_PROMPT), HumanMessage(content=user_content)]},
-            stream_mode="updates",
-        ):
-            for node_data in event.values():
-                for msg in node_data.get("messages", []):
-                    if isinstance(msg, ToolMessage):
-                        try:
-                            data = json.loads(msg.content)
-                            code = data.get("code", "")
-                            if code:
-                                logs.append({"level": "sandbox", "title": f"子Agent 沙箱 → {msg.name}", "detail": code, "elapsed_ms": data.get("elapsed_ms", 0)})
-                            summary = {k: v for k, v in data.items() if k != "code"}
-                            logs.append({"level": "tool_result", "title": f"{msg.name} → {str(data.get('result'))[:60]}", "detail": json.dumps(summary, ensure_ascii=False, indent=2), "elapsed_ms": data.get("elapsed_ms", 0)})
-                        except Exception:
-                            logs.append({"level": "tool_result", "title": msg.name, "detail": str(msg.content)[:500], "elapsed_ms": 0})
-                    elif isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-                        output_parts.append(msg.content)
-    except Exception as e:
-        logs.append({"level": "error", "title": "子Agent 执行异常", "detail": str(e), "elapsed_ms": 0})
-        return f"[独立求解失败: {e}]"
-
-    return "\n\n".join(output_parts).strip()
+    for event in graph.compile().stream(initial, stream_mode="updates"):
+        for node_data in event.values():
+            for msg in node_data.get("messages", []):
+                if isinstance(msg, ToolMessage):
+                    try:
+                        data = json.loads(msg.content)
+                        if data.get("code"):
+                            _append_log(logs, "sandbox", f"沙箱 → {msg.name}", data["code"], data.get("elapsed_ms", 0))
+                        summary = {k: v for k, v in data.items() if k != "code"}
+                        _append_log(logs, "tool_result", f"{msg.name} → {str(data.get('result'))[:60]}",
+                                    json.dumps(summary, ensure_ascii=False, indent=2), data.get("elapsed_ms", 0))
+                    except Exception:
+                        _append_log(logs, "tool_result", msg.name, str(msg.content)[:300])
+                elif isinstance(msg, AIMessage) and msg.content:
+                    output_parts.append(msg.content)
+    return "\n\n".join(output_parts)
 
 
+# ---- 主流程：三 Agent 审校 ----
 def run_review():
-    from langgraph.graph import StateGraph, MessagesState, START, END
-    from langgraph.prebuilt import ToolNode
-    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+    import concurrent.futures
 
-    st.session_state.logs = []
-    st.session_state.solver_logs = []
+    # 清空状态
+    st.session_state.agent1_logs = []
+    st.session_state.agent2_logs = []
+    st.session_state.agent3_logs = []
+    st.session_state.agent1_result = ""
+    st.session_state.agent2_result = ""
+    st.session_state.agent3_result = ""
     st.session_state.final_report = ""
 
-    add_log("info", "初始化", f"题目 {len(problem_text)} 字符, 图片 {len(uploaded_files or [])} 张")
-
-    # 提取纯题干
-    problem_only = extract_problem_only(problem_text)
-    add_log("info", "提取题干", f"原 {len(problem_text)} 字符 → 题干 {len(problem_only)} 字符")
-
-    # 构建图片内容
+    # 准备输入
     images = []
     if uploaded_files:
         for uf in uploaded_files:
@@ -347,86 +296,57 @@ def run_review():
             if img:
                 images.append(img)
 
-    # ---- 并行执行：子Agent + 主Agent 同时启动 ----
-    import concurrent.futures
-    import threading
+    problem_only = extract_problem_only(problem_text)
+    full_content = [{"type": "text", "text": problem_text}] + images
+    problem_content = [{"type": "text", "text": problem_only}] + images
 
-    # 用普通列表 + 锁，避免 Streamlit session_state 在子线程不可用
-    main_logs: list = []
-    solver_logs: list = []
-    _log_lock = threading.Lock()
+    a1_logs, a2_logs, a3_logs = [], [], []
 
-    def _log(logs_list: list, level, title, detail="", elapsed_ms=0):
-        with _log_lock:
-            logs_list.append({"level": level, "title": title, "detail": detail, "elapsed_ms": elapsed_ms})
+    # ---- A1 + A2 并行 ----
+    def _a1():
+        _append_log(a1_logs, "info", "A1 校对开始", f"完整题目 {len(problem_text)} 字符")
+        return _run_agent(full_content, PROOFREAD_PROMPT, a1_logs, with_tools=True)
 
-    def _run_main_agent(user_content_for_main: list, logs: list):
-        """主 Agent 审校（Step 1-4），返回报告文本"""
-        llm = build_llm()
-        tools = get_agent()
-        _log(logs, "info", "主 Agent 审校开始", "与子Agent并行运行")
-        llm_with_tools = llm.bind_tools(tools)
-        tool_node = ToolNode(tools)
+    def _a2():
+        _append_log(a2_logs, "info", "A2 求解开始", f"纯题干 {len(problem_only)} 字符")
+        return _run_agent(problem_content, SOLVER_PROMPT, a2_logs, with_tools=True)
 
-        def _agent(state):
-            t0 = time.monotonic()
-            msgs = [SystemMessage(content=SYSTEM_PROMPT)] + list(state["messages"])
-            resp = llm_with_tools.invoke(msgs)
-            elapsed = int((time.monotonic() - t0) * 1000)
-            _log(logs, "info", f"主Agent LLM ({elapsed}ms)", f"tool_calls={len(resp.tool_calls) if hasattr(resp,'tool_calls') and resp.tool_calls else 0}")
-            if hasattr(resp, "tool_calls") and resp.tool_calls:
-                for tc in resp.tool_calls:
-                    _log(logs, "tool_call", tc["name"], json.dumps(tc.get("args", {}), ensure_ascii=False, indent=2))
-            return {"messages": [resp]}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        f1, f2 = ex.submit(_a1), ex.submit(_a2)
+        a1_result = f1.result()
+        a2_result = f2.result()
 
-        def _route(state):
-            last = state["messages"][-1]
-            return "tools" if (isinstance(last, AIMessage) and last.tool_calls) else END
+    # ---- A3 串行（无需工具） ----
+    _append_log(a3_logs, "info", "A3 开始", "合并 A1+A2 结果")
+    arbiter_input = [
+        {"type": "text", "text": f"""## 题目原文（含标准答案）
+{problem_text}
 
-        graph = StateGraph(MessagesState)
-        graph.add_node("agent", _agent)
-        graph.add_node("tools", tool_node)
-        graph.add_edge(START, "agent")
-        graph.add_conditional_edges("agent", _route)
-        graph.add_edge("tools", "agent")
+---
+## 学生的解答（独立完成，未看过标准答案）
+{a2_result}
 
-        initial = {"messages": [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_content_for_main)]}
-        report_parts = []
-        for event in graph.compile().stream(initial, stream_mode="updates"):
-            for node_data in event.values():
-                for msg in node_data.get("messages", []):
-                    if isinstance(msg, ToolMessage):
-                        try:
-                            data = json.loads(msg.content)
-                            if data.get("code"):
-                                _log(logs, "sandbox", f"{msg.name} 代码", data["code"], data.get("elapsed_ms", 0))
-                            summary = {k: v for k, v in data.items() if k != "code"}
-                            _log(logs, "tool_result", f"{msg.name} → {str(data.get('result'))[:60]}",
-                                 json.dumps(summary, ensure_ascii=False, indent=2), data.get("elapsed_ms", 0))
-                        except Exception:
-                            _log(logs, "tool_result", msg.name, str(msg.content)[:300])
-                    elif isinstance(msg, AIMessage) and msg.content:
-                        report_parts.append(msg.content)
-        return "\n\n".join(report_parts)
+---
+## 初步审校结果（文字/符号/格式/解析已审）
+{a1_result}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_solver = executor.submit(run_solver, problem_only, images if images else None, solver_logs)
-        future_review = executor.submit(_run_main_agent, [{"type": "text", "text": problem_text}] + images, main_logs)
+请根据以上信息，完成答案正确性校验和校对总结。"""}
+    ]
+    a3_result = _run_agent(arbiter_input, ARBITER_PROMPT, a3_logs, with_tools=False)
 
-        solver_result = future_solver.result()
-        main_report = future_review.result()
+    # ---- 合并最终报告 ----
+    final = f"""{a1_result}
 
-    # 合并日志到 session_state
-    st.session_state.solver_logs = solver_logs
-    for entry in main_logs:
-        add_log(entry["level"], entry["title"], entry.get("detail", ""), entry.get("elapsed_ms", 0))
+---
 
-    # 合并报告 + 交叉比对
-    final_report = main_report
-    if solver_result and "失败" not in solver_result:
-        final_report += f"\n\n---\n\n## 子Agent 独立求解结果（供交叉比对）\n\n{solver_result}"
-    st.session_state.final_report = final_report
-    add_log("info", "审校完成", f"报告 {len(final_report)} 字符")
+{a3_result}"""
+    st.session_state.agent1_logs = a1_logs
+    st.session_state.agent2_logs = a2_logs
+    st.session_state.agent3_logs = a3_logs
+    st.session_state.agent1_result = a1_result
+    st.session_state.agent2_result = a2_result
+    st.session_state.agent3_result = a3_result
+    st.session_state.final_report = final
 
 
 # ---- 执行 ----
@@ -436,57 +356,30 @@ if start_review:
     elif not api_url or not api_key:
         st.error("请填写 API URL 和 Key")
     else:
-        with st.spinner("审校中（LLM 推理 + 沙箱计算）..."):
+        with st.spinner("三 Agent 审校中（A1校对 ∥ A2求解 → A3校验总结）..."):
             run_review()
-
-def render_solver_logs():
-    with tab_solver:
-        if not st.session_state.solver_logs:
-            st.info("点击「开始审校」后，子Agent 独立求解的日志会显示在这里")
-            return
-        solver_text = build_logs_text(st.session_state.solver_logs)
-        st.download_button(
-            "📋 导出子Agent日志", data=solver_text,
-            file_name=f"solver_log_{time.strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain", use_container_width=True,
-        )
-        for log in st.session_state.solver_logs:
-            lv = log["level"]
-            if lv == "info":
-                st.text(f"ℹ️ {log['title']}" + (f" ({log['elapsed_ms']}ms)" if log.get("elapsed_ms") else ""))
-                if log.get("detail"):
-                    st.caption(log["detail"][:200])
-            elif lv == "tool_call":
-                with st.expander(f"🔧 子Agent: {log['title']}", expanded=False):
-                    st.code(log["detail"], language="json")
-            elif lv == "tool_result":
-                with st.expander(f"📊 子Agent: {log['title']}", expanded=False):
-                    st.code(log["detail"], language="json")
-                    if log.get("elapsed_ms"):
-                        st.caption(f"⏱ {log['elapsed_ms']}ms")
-            elif lv == "sandbox":
-                with st.expander(f"🖥 子Agent沙箱: {log['title']}", expanded=False):
-                    st.code(log["detail"], language="python")
-            elif lv == "error":
-                st.error(f"子Agent: {log['title']}\n{log['detail'][:500]}")
-
 
 # ---- 渲染 ----
 with tab_report:
     if st.session_state.final_report:
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            st.download_button(
-                "📥 下载报告", data=st.session_state.final_report,
-                file_name=f"review_report_{time.strftime('%Y%m%d_%H%M%S')}.md",
-                mime="text/markdown", use_container_width=True,
-            )
+        st.download_button("📥 下载报告", data=st.session_state.final_report,
+                           file_name=f"review_{time.strftime('%Y%m%d_%H%M%S')}.md",
+                           mime="text/markdown", use_container_width=True)
         st.markdown(st.session_state.final_report)
     else:
-        st.info("点击「开始审校」后，最终六段校对报告将显示在这里")
+        st.info("点击「开始审校」后将显示完整六段校对报告")
 
-render_logs()
-render_solver_logs()
+with tab_a1:
+    st.caption("Agent 1: 审校 Step 1-4（文字/符号/严谨性/解析）")
+    render_agent_logs(st.session_state.agent1_logs, "A1")
+
+with tab_a2:
+    st.caption("Agent 2: 独立求解（纯题干，无解析）")
+    render_agent_logs(st.session_state.agent2_logs, "A2")
+
+with tab_a3:
+    st.caption("Agent 3: 校验+总结 Step 5-6（无需工具）")
+    render_agent_logs(st.session_state.agent3_logs, "A3")
 
 st.divider()
-st.caption(f"sympy_tools / LangGraph ReAct / doubao + Sandbox / {len(get_agent())} tools")
+st.caption(f"三 Agent · 11 tools · {len(get_agent())} 工具已注册")
