@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_sympy_tools.py::TestSafetyBlacklist -v)",
+      "Bash(python -m pytest tests/test_sympy_tools.py::TestCodeGeneration tests/test_sympy_tools.py::TestSerializationThroughSandbox -v)",
+      "Bash(python -m pytest tests/test_sympy_tools.py::TestSerializationThroughSandbox -v)",
+      "Bash(python -m pytest tests/test_sympy_tools.py::TestSerializationThroughSandbox::test_simple_numeric_result_is_float -v)",
+      "Bash(python -m pytest tests/test_sympy_tools.py::TestEvaluateExpressionTool -v)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"from langchain_core.utils.function_calling import convert_to_openai_tool; print\\('found'\\)\")",
+      "Bash(python -m pytest tests/test_sympy_tools.py -v)",
+      "Bash(python -m pytest tests/test_sympy_tools.py::TestSolveEquationTool tests/test_sympy_tools.py::TestCheckEqualityTool tests/test_sympy_tools.py::TestSimplifyExpressionTool -v)",
+      "Bash(python -m pytest tests/test_sympy_tools.py::TestDimensionalAnalysisTool -v)",
+      "Bash(python -m pytest tests/ -v)"
+    ]
+  }
+}
