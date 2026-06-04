@@ -349,29 +349,39 @@ def run_review():
 
     # ---- 并行执行：子Agent + 主Agent 同时启动 ----
     import concurrent.futures
+    import threading
 
-    def _run_main_agent(user_content_for_main: list):
+    # 用普通列表 + 锁，避免 Streamlit session_state 在子线程不可用
+    main_logs: list = []
+    solver_logs: list = []
+    _log_lock = threading.Lock()
+
+    def _log(logs_list: list, level, title, detail="", elapsed_ms=0):
+        with _log_lock:
+            logs_list.append({"level": level, "title": title, "detail": detail, "elapsed_ms": elapsed_ms})
+
+    def _run_main_agent(user_content_for_main: list, logs: list):
         """主 Agent 审校（Step 1-4），返回报告文本"""
         llm = build_llm()
         tools = get_agent()
-        add_log("info", "主 Agent 审校开始", "与子Agent并行运行")
+        _log(logs, "info", "主 Agent 审校开始", "与子Agent并行运行")
         llm_with_tools = llm.bind_tools(tools)
         tool_node = ToolNode(tools)
 
         def _agent(state):
             t0 = time.monotonic()
-            msgs = list(state["messages"])
-            msgs = [SystemMessage(content=SYSTEM_PROMPT)] + msgs
+            msgs = [SystemMessage(content=SYSTEM_PROMPT)] + list(state["messages"])
             resp = llm_with_tools.invoke(msgs)
             elapsed = int((time.monotonic() - t0) * 1000)
-            add_log("info", f"主Agent LLM 响应 ({elapsed}ms)")
+            _log(logs, "info", f"主Agent LLM ({elapsed}ms)", f"tool_calls={len(resp.tool_calls) if hasattr(resp,'tool_calls') and resp.tool_calls else 0}")
             if hasattr(resp, "tool_calls") and resp.tool_calls:
                 for tc in resp.tool_calls:
-                    add_log("tool_call", tc["name"], json.dumps(tc.get("args", {}), ensure_ascii=False, indent=2))
+                    _log(logs, "tool_call", tc["name"], json.dumps(tc.get("args", {}), ensure_ascii=False, indent=2))
             return {"messages": [resp]}
 
         def _route(state):
-            return "tools" if (isinstance(state["messages"][-1], AIMessage) and state["messages"][-1].tool_calls) else END
+            last = state["messages"][-1]
+            return "tools" if (isinstance(last, AIMessage) and last.tool_calls) else END
 
         graph = StateGraph(MessagesState)
         graph.add_node("agent", _agent)
@@ -389,28 +399,27 @@ def run_review():
                         try:
                             data = json.loads(msg.content)
                             if data.get("code"):
-                                add_log("sandbox", f"{msg.name} 代码", data["code"])
+                                _log(logs, "sandbox", f"{msg.name} 代码", data["code"], data.get("elapsed_ms", 0))
                             summary = {k: v for k, v in data.items() if k != "code"}
-                            add_log("tool_result", f"{msg.name} → {str(data.get('result'))[:60]}",
-                                    json.dumps(summary, ensure_ascii=False, indent=2))
+                            _log(logs, "tool_result", f"{msg.name} → {str(data.get('result'))[:60]}",
+                                 json.dumps(summary, ensure_ascii=False, indent=2), data.get("elapsed_ms", 0))
                         except Exception:
-                            add_log("tool_result", msg.name, str(msg.content)[:300])
+                            _log(logs, "tool_result", msg.name, str(msg.content)[:300])
                     elif isinstance(msg, AIMessage) and msg.content:
                         report_parts.append(msg.content)
         return "\n\n".join(report_parts)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_solver = executor.submit(
-            run_solver, problem_only, images if images else None, st.session_state.solver_logs
-        )
-        future_review = executor.submit(
-            _run_main_agent, [{"type": "text", "text": problem_text}] + images
-        )
+        future_solver = executor.submit(run_solver, problem_only, images if images else None, solver_logs)
+        future_review = executor.submit(_run_main_agent, [{"type": "text", "text": problem_text}] + images, main_logs)
 
         solver_result = future_solver.result()
-        add_log("info", "子 Agent 独立求解完成", (solver_result or "")[:200])
-
         main_report = future_review.result()
+
+    # 合并日志到 session_state
+    st.session_state.solver_logs = solver_logs
+    for entry in main_logs:
+        add_log(entry["level"], entry["title"], entry.get("detail", ""), entry.get("elapsed_ms", 0))
 
     # 合并报告 + 交叉比对
     final_report = main_report
