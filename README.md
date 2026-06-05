@@ -34,8 +34,11 @@
 # 安装依赖
 pip install sympy requests
 
-# 运行（GUI）
+# 运行整合版（推荐，含转换 + 拆分 + 校对）
 python 校对工具整合版v1.5.py
+
+# 或运行独立校对工具（仅校对，适合已有拆分结果的目录）
+python API校对单讲拆分1.5.py
 ```
 
 1. 点击 **⚙️ API 配置** 填写接口地址、密钥和模型名
@@ -54,7 +57,7 @@ python 校对工具整合版v1.5.py
 - 新增化学符号计算工具：方程式配平（线性代数法）、化学计量计算
 - 新增标题拆分模式：`变式N_例M`、`变式N`
 - 修复 Windows 子进程 GBK 编码问题
-- 窗口标题改为"多学科题目处理工具 v1.5"
+- `API校对单讲拆分1.5.py` 同步升级为多学科工具（学科选择 + 工具集成 + tool calling）
 
 ### v1.4 — 符号计算工具包
 
@@ -84,16 +87,17 @@ python 校对工具整合版v1.5.py
 
 ```
 校对v1.3/
-├── 校对工具整合版v1.5.py   # 主程序（GUI）
-├── API校对单讲拆分1.3.py    # 物理校对（旧版，独立运行）
-├── 讲义拆分题目和知识转md.py # 讲义拆分（旧版，独立运行）
-├── 组卷网试卷转md.py         # 试卷拆分（旧版，独立运行）
-├── sympy_tools/             # 符号计算工具包（v1.4+）
-│   ├── tools.py             # 工具定义（LangChain BaseTool）
-│   ├── templates.py         # SymPy 代码生成模板
-│   ├── sandbox.py           # 沙箱执行环境
-│   └── safety.py            # 安全检测
-├── prompts/                 # 学科提示词（v1.5）
+├── 校对工具整合版v1.5.py    # 主程序（转换 + 拆分 + 校对，GUI）
+├── API校对单讲拆分1.5.py     # 独立校对工具（仅校对，GUI）
+├── 讲义拆分题目和知识转md.py  # 讲义拆分（旧版，独立运行）
+├── 组卷网试卷转md.py          # 试卷拆分（旧版，独立运行）
+├── sympy_tools/              # 符号计算工具包（v1.4+）
+│   ├── __init__.py
+│   ├── tools.py              # 工具定义（LangChain BaseTool）
+│   ├── templates.py          # SymPy 代码生成模板
+│   ├── sandbox.py            # 沙箱执行环境
+│   └── safety.py             # 安全检测
+├── prompts/                  # 学科提示词（v1.5）
 │   ├── 语文.json
 │   ├── 数学.json
 │   ├── 英语.json
@@ -103,9 +107,15 @@ python 校对工具整合版v1.5.py
 │   ├── 政治.json
 │   ├── 历史.json
 │   └── 地理.json
-├── title_patterns.json      # 讲义标题匹配规则
-├── .env                     # API 配置（需自行创建）
-└── output/                  # 默认输出目录
+├── tests/                    # 测试
+│   ├── __init__.py
+│   └── test_sympy_tools.py
+├── API_Proofreading_Prompt.json   # 旧版物理提示词（回退用）
+├── API_Knowledge_Prompt.json      # 旧版物理知识提示词（回退用）
+├── title_patterns.json            # 讲义标题匹配规则
+├── CLAUDE.md                      # Claude Code 项目指南
+├── .gitignore
+└── output/                        # 默认输出目录
     ├── 拆题结果/
     └── 校对报告/
 ```
