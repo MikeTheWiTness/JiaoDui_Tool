@@ -16,7 +16,7 @@ _DANGEROUS_PATTERNS = [
     r"\bhttp\b",
     r"\bexec\s*\(",
     r"\beval\s*\(",
-    r"\bcompile\s*\(",
+    r"(?<![.\w])compile\s*\(",
     r"\bopen\s*\(",
     r"\bfile\s*\(",
     r"\bwrite\s*\(",

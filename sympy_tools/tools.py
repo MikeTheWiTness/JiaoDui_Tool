@@ -342,3 +342,125 @@ class MagneticDeflectionTool(BaseTool):
         raise NotImplementedError
 
 
+
+
+# ---- BalanceChemicalEquationTool ----
+
+class BalanceEquationParams(BaseModel):
+    equation: str = Field(
+        description="待配平的化学方程式, 用 -> 分隔反应物和产物, 如 'Fe + O2 -> Fe2O3' 或 'C2H5OH + O2 -> CO2 + H2O'"
+    )
+
+
+class BalanceChemicalEquationTool(BaseTool):
+    name: str = "balance_chemical_equation"
+    description: str = (
+        "配平化学方程式。输入用 -> 分隔反应物和产物（如 'Fe + O2 -> Fe2O3'），"
+        "返回配平后的系数和完整方程式。使用线性代数方法（原子守恒矩阵求解），确保原子数目精确守恒。"
+        "用于验证化学题的方程式配平是否正确。"
+    )
+    args_schema: type[BaseModel] = BalanceEquationParams
+
+    def _run(self, equation: str) -> str:
+        return _run_operation("chemistry_balance", equation=equation)
+
+    async def _arun(self, *args: Any, **kwargs: Any) -> str:
+        raise NotImplementedError
+
+
+# ---- StoichiometryCalcTool ----
+
+_MOLAR_MASSES: dict[str, float] = {
+    "H2O": 18.015, "CO2": 44.01, "CO": 28.01, "CH4": 16.04,
+    "C2H5OH": 46.07, "C2H4": 28.05, "C2H2": 26.04, "C6H12O6": 180.16,
+    "NaCl": 58.44, "NaOH": 40.00, "Na2CO3": 105.99, "NaHCO3": 84.01,
+    "HCl": 36.46, "H2SO4": 98.08, "HNO3": 63.01, "H3PO4": 98.00,
+    "NH3": 17.03, "NH4Cl": 53.49, "NH4NO3": 80.04, "NO": 30.01, "NO2": 46.01,
+    "CaCO3": 100.09, "CaO": 56.08, "Ca(OH)2": 74.09, "CaCl2": 110.98,
+    "Fe": 55.85, "Fe2O3": 159.69, "Fe3O4": 231.53, "FeCl3": 162.20,
+    "Al": 26.98, "Al2O3": 101.96, "Al(OH)3": 78.00, "AlCl3": 133.34,
+    "Cu": 63.55, "CuO": 79.55, "CuSO4": 159.61, "Cu(OH)2": 97.56,
+    "Zn": 65.38, "ZnO": 81.38, "ZnSO4": 161.44,
+    "Ag": 107.87, "AgNO3": 169.87, "AgCl": 143.32,
+    "KMnO4": 158.03, "K2Cr2O7": 294.18, "KCl": 74.55, "KOH": 56.11,
+    "MnO2": 86.94, "SO2": 64.06, "SO3": 80.06,
+    "O2": 32.00, "H2": 2.016, "N2": 28.01, "Cl2": 70.90,
+    "BaCl2": 208.23, "BaSO4": 233.39, "Ba(OH)2": 171.34,
+    "Mg": 24.31, "MgO": 40.30, "Mg(OH)2": 58.32, "MgCl2": 95.21,
+}
+
+
+class StoichiometryParams(BaseModel):
+    balanced_equation: str = Field(
+        description="已配平的化学方程式, 如 '2H2 + O2 -> 2H2O'"
+    )
+    known_substance: str = Field(
+        description="已知质量的物质化学式, 如 'H2'"
+    )
+    known_mass: float = Field(
+        description="已知物质的质量, 单位克(g), 如 4.0"
+    )
+    target_substance: str = Field(
+        description="待求质量的物质化学式, 如 'H2O'"
+    )
+
+
+class StoichiometryCalcTool(BaseTool):
+    name: str = "stoichiometry_calc"
+    description: str = (
+        "根据已配平的化学方程式和一种物质的质量，计算另一种物质的质量。"
+        "自动使用内置摩尔质量数据库（涵盖约50种常见化合物）。"
+        "输入：配平方程式 + 已知物质化学式 + 已知质量(g) + 目标物质化学式。"
+        "返回：目标物质的物质的量(mol)和质量(g)。"
+        "用于验证化学计量计算题的答案。"
+    )
+    args_schema: type[BaseModel] = StoichiometryParams
+
+    def _run(
+        self, balanced_equation: str, known_substance: str,
+        known_mass: float, target_substance: str,
+    ) -> str:
+        import re as _re
+        sides = balanced_equation.split("->")
+        if len(sides) != 2:
+            return json.dumps({"error": "方程式格式错误，需要用 -> 分隔"}, ensure_ascii=False)
+
+        def _parse_side(s):
+            coeff_pat = _re.compile(r'^\s*(\d*)\s*([A-Za-z0-9()]+)\s*$')
+            result = []
+            for p in s.split("+"):
+                p = p.strip()
+                m = coeff_pat.match(p)
+                if m:
+                    coeff = int(m.group(1)) if m.group(1) else 1
+                    formula = m.group(2)
+                    result.append((coeff, formula))
+            return result
+
+        reactants = _parse_side(sides[0])
+        products = _parse_side(sides[1])
+        reactant_coeffs = [c for c, _ in reactants]
+        product_coeffs = [c for c, _ in products]
+        reactant_formulas = [f for _, f in reactants]
+        product_formulas = [f for _, f in products]
+        all_formulas = reactant_formulas + product_formulas
+        missing = [f for f in all_formulas if f not in _MOLAR_MASSES]
+        if missing:
+            return json.dumps({
+                "error": f"以下物质的摩尔质量不在内置数据库中: {', '.join(missing)}。暂不支持此计算。",
+            }, ensure_ascii=False)
+
+        return _run_operation(
+            "stoichiometry",
+            known_substance=known_substance,
+            target_substance=target_substance,
+            known_mass=known_mass,
+            reactants=reactant_formulas,
+            products=product_formulas,
+            reactant_coeffs=reactant_coeffs,
+            product_coeffs=product_coeffs,
+            molar_masses={f: _MOLAR_MASSES[f] for f in all_formulas},
+        )
+
+    async def _arun(self, *args: Any, **kwargs: Any) -> str:
+        raise NotImplementedError

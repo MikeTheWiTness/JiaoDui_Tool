@@ -154,6 +154,102 @@ _TEMPLATES: dict[str, Template] = {
         + "$solve_code\n"
         + _SERIALIZER
     ),
+    "chemistry_balance": Template(
+        _SAFE_IMPORTS
+        + "\n"
+        + "import re as _re\n"
+        + "_eq = $equation_str\n"
+        + "_sides = _eq.split('->')\n"
+        + "_reactants = [s.strip() for s in _sides[0].split('+')]\n"
+        + "_products = [s.strip() for s in _sides[1].split('+')]\n"
+        + "_all_species = _reactants + _products\n"
+        + "_n_react = len(_reactants)\n"
+        + "\n"
+        + "_elem_pattern = _re.compile(r'([A-Z][a-z]?)(\\d*)')\n"
+        + "def _parse_formula(f):\n"
+        + "    _counts = {}\n"
+        + "    for _m in _elem_pattern.finditer(f):\n"
+        + "        _el = _m.group(1)\n"
+        + "        _n = int(_m.group(2)) if _m.group(2) else 1\n"
+        + "        _counts[_el] = _counts.get(_el, 0) + _n\n"
+        + "    return _counts\n"
+        + "\n"
+        + "_elements = set()\n"
+        + "for _s in _all_species:\n"
+        + "    _elements.update(_parse_formula(_s).keys())\n"
+        + "_elements = sorted(_elements)\n"
+        + "\n"
+        + "_A = []\n"
+        + "for _el in _elements:\n"
+        + "    _row = []\n"
+        + "    for _i, _s in enumerate(_all_species):\n"
+        + "        _cnt = _parse_formula(_s).get(_el, 0)\n"
+        + "        if _i >= _n_react:\n"
+        + "            _cnt = -_cnt\n"
+        + "        _row.append(_cnt)\n"
+        + "    _A.append(_row)\n"
+        + "\n"
+        + "_M = Matrix(_A)\n"
+        + "_null = _M.nullspace()\n"
+        + "if not _null:\n"
+        + "    result = {'error': '无法配平（可能方程式有误）'}\n"
+        + "else:\n"
+        + "    _vec = _null[0]\n"
+        + "    _denoms = [Rational(v).q for v in _vec]\n"
+        + "    import math as _math\n"
+        + "    _lcm = _denoms[0]\n"
+        + "    for _d in _denoms[1:]:\n"
+        + "        _lcm = _lcm * _d // _math.gcd(_lcm, _d)\n"
+        + "    _coeffs = [abs(int(Rational(v) * _lcm)) for v in _vec]\n"
+        + "    _parts = []\n"
+        + "    for _i, _s in enumerate(_all_species):\n"
+        + "        _co = _coeffs[_i]\n"
+        + "        _prefix = str(_co) if _co != 1 else ''\n"
+        + "        _parts.append(_prefix + _s)\n"
+        + "        if _i == _n_react - 1:\n"
+        + "            _parts.append(' -> ')\n"
+        + "        elif _i < len(_all_species) - 1:\n"
+        + "            _parts.append(' + ')\n"
+        + "    result = {'coefficients': _coeffs, "
+        + "'reactant_coeffs': _coeffs[:_n_react], "
+        + "'product_coeffs': _coeffs[_n_react:], "
+        + "'balanced_equation': ''.join(_parts), "
+        + "'species': _all_species}\n"
+        + _SERIALIZER
+    ),
+    "stoichiometry": Template(
+        _SAFE_IMPORTS
+        + "\n"
+        + "$molar_masses\n"
+        + "_known = $known_substance_str\n"
+        + "_target = $target_substance_str\n"
+        + "_known_mass = float($known_mass_val)\n"
+        + "\n"
+        + "_rco = $reactant_coeffs\n"
+        + "_pco = $product_coeffs\n"
+        + "_react = $reactants_str\n"
+        + "_prod = $products_str\n"
+        + "\n"
+        + "_all = _react + _prod\n"
+        + "_coeffs = _rco + _pco\n"
+        + "\n"
+        + "if _known not in _all or _target not in _all:\n"
+        + "    result = {'error': '物质不在方程式中'}\n"
+        + "else:\n"
+        + "    _ki = _all.index(_known)\n"
+        + "    _ti = _all.index(_target)\n"
+        + "    _known_mol = _known_mass / _MOLAR[_known]\n"
+        + "    _target_mol = _known_mol * (_coeffs[_ti] / _coeffs[_ki])\n"
+        + "    _target_mass = _target_mol * _MOLAR[_target]\n"
+        + "    result = {\n"
+        + "        'known_mass_g': _known_mass,\n"
+        + "        'known_mol': float(_known_mol),\n"
+        + "        'target_mol': float(_target_mol),\n"
+        + "        'target_mass_g': float(_target_mass),\n"
+        + "        'mole_ratio': f'{_coeffs[_ti]}:{_coeffs[_ki]}',\n"
+        + "    }\n"
+        + _SERIALIZER
+    ),
 }
 
 
@@ -279,6 +375,24 @@ def build_code(operation: str, **params) -> str:
         "    result = {'error': 'no_solution'}\n"
     )
 
+    # Chemistry params
+    equation_str = json_repr(params.get("equation", ""))
+    known_substance_str = json_repr(params.get("known_substance", ""))
+    target_substance_str = json_repr(params.get("target_substance", ""))
+    known_mass_val = json_repr(params.get("known_mass", 0))
+    reactant_coeffs = json_repr(params.get("reactant_coeffs", []))
+    product_coeffs = json_repr(params.get("product_coeffs", []))
+    reactants_str = json_repr(params.get("reactants", []))
+    products_str = json_repr(params.get("products", []))
+
+    # Build molar masses dict
+    molar_masses = params.get("molar_masses", {}) or {}
+    molar_lines = ["_MOLAR = {"]
+    for formula, mass in molar_masses.items():
+        molar_lines.append(f"    {json_repr(formula)}: {mass},")
+    molar_lines.append("}")
+    molar_masses_code = "\n".join(molar_lines)
+
     return template.safe_substitute(
         subs_call=subs_call,
         substitutions="",
@@ -306,6 +420,15 @@ def build_code(operation: str, **params) -> str:
         op_code=op_code,
         setup_code=setup_code,
         solve_code=solve_code,
+        equation_str=equation_str,
+        known_substance_str=known_substance_str,
+        target_substance_str=target_substance_str,
+        known_mass_val=known_mass_val,
+        reactant_coeffs=reactant_coeffs,
+        product_coeffs=product_coeffs,
+        reactants_str=reactants_str,
+        products_str=products_str,
+        molar_masses=molar_masses_code,
     )
 
 

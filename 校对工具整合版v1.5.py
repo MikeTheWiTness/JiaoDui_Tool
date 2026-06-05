@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-物理题目处理工具 —— 整合版
+多学科题目处理工具 v1.5 —— 整合版
   模式：试卷模式 / 讲义模式
   流程：完整流程 / 仅拆分 / 仅校对
+  学科：语数外理化生政史地（各学科独立提示词）
   输出：output/拆题结果/ + output/校对报告/
 """
 
@@ -13,12 +14,89 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import requests
 
+# ========================= 符号计算工具集成 =========================
+try:
+    from sympy_tools.tools import (
+        EvaluateExpressionTool, SolveEquationTool, CheckEqualityTool,
+        SimplifyExpressionTool, SolvePhysicsFormulaTool, DimensionalAnalysisTool,
+        ComputeLimitTool, VectorOperationsTool, MagneticDeflectionTool,
+        BalanceChemicalEquationTool, StoichiometryCalcTool,
+    )
+    _TOOLS_AVAILABLE = True
+except ImportError:
+    _TOOLS_AVAILABLE = False
+
+# 学科 → 工具实例映射
+def _build_tool_map():
+    if not _TOOLS_AVAILABLE:
+        return {}
+    return {
+        "数学": [
+            EvaluateExpressionTool(), SolveEquationTool(), CheckEqualityTool(),
+            SimplifyExpressionTool(), ComputeLimitTool(),
+        ],
+        "物理": [
+            EvaluateExpressionTool(), SolveEquationTool(), SolvePhysicsFormulaTool(),
+            DimensionalAnalysisTool(), VectorOperationsTool(), MagneticDeflectionTool(),
+        ],
+        "化学": [
+            EvaluateExpressionTool(), SolveEquationTool(),
+            BalanceChemicalEquationTool(), StoichiometryCalcTool(),
+        ],
+        "生物": [
+            EvaluateExpressionTool(), SolveEquationTool(),
+        ],
+    }
+
+SUBJECT_TOOLS = _build_tool_map()
+
+def _tool_to_openai(tool):
+    """将 LangChain BaseTool 转为 OpenAI function-calling 格式"""
+    schema = tool.args_schema.model_json_schema()
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": {
+                "type": "object",
+                "properties": schema.get("properties", {}),
+                "required": schema.get("required", []),
+            }
+        }
+    }
+
+def _execute_tool(tool_instances, tool_name, arguments):
+    """根据工具名执行对应工具，返回结果字符串"""
+    for t in tool_instances:
+        if t.name == tool_name:
+            try:
+                return t._run(**arguments)
+            except Exception as e:
+                return f"工具执行错误: {e}"
+    return f"未知工具: {tool_name}"
+
+def _get_tool_instructions(subject):
+    """生成提示词中的工具使用说明段落"""
+    if subject not in SUBJECT_TOOLS or not SUBJECT_TOOLS[subject]:
+        return ""
+    tool_list = [f"- `{t.name}`: {t.description}" for t in SUBJECT_TOOLS[subject]]
+    return (
+        "## 可用的符号计算工具\n"
+        "你在校对该学科题目时，可以使用以下工具进行**实算验证**，不得凭模型自身估算数值结果：\n"
+        + "\n".join(tool_list) + "\n"
+        "使用规则：对于需要数值计算、方程求解、公式推导验证的步骤，必须调用对应工具获取精确结果。"
+        "仅文字类问题（错别字、语病等）不需要调用工具。\n"
+    )
+
 # ========================= 全局配置 =========================
 DEFAULT_OUTPUT = "output"
 ENV_FILE = ".env"
 PROMPT_FILE = "API_Proofreading_Prompt.json"
 KNOWLEDGE_PROMPT_FILE = "API_Knowledge_Prompt.json"
 TITLE_PATTERNS_FILE = "title_patterns.json"
+PROMPTS_DIR = "prompts"
+SUBJECTS = ["物理", "语文", "数学", "英语", "化学", "生物", "政治", "历史", "地理"]
 
 def load_env_config():
     """从 .env 文件读取 API 配置"""
@@ -64,6 +142,7 @@ def load_title_patterns():
         r'例\d+', r'练\d+', r'清北班', r'清北班例题', r'清北班备用',
         r'教师版', r'一本班', r'一本班\d+', r'双一流班', r'双一流班\d+',
         r'A班', r'A班\d+', r'A\+班', r'S班',
+        r'变式\d+_例\d+', r'变式\d+',
     ]
     if os.path.exists(TITLE_PATTERNS_FILE):
         try:
@@ -511,51 +590,41 @@ def convert_with_pandoc(input_path, output_md, img_dir, use_mathjax=False):
 
 # ==================== 工具三：API 校对管线 ====================
 
-def load_system_prompt():
-    default_lines = [
-        "你现在是资深高中物理教研员，需要对高中物理题目进行全方位严格校对，",
-        "输入内容包含：题目Markdown文本 + 题目配图（若有），",
-        "校对范围：",
-        "1. 文字校对：错别字、漏字、语病、标点符号、排版问题",
-        "2. 公式符号：物理公式、希腊字母、单位、矢量符号、上下标、格式规范",
-        "3. 题干严谨性：物理情景描述、条件完整性、已知量/未知量表述",
-        "4. 解析内容：解题逻辑、公式引用、步骤完整性、物理规律适用性",
-        "5. 答案校验：计算结果、取值、单位、结论正确性、易错点",
-        "6. 格式规范：换行、编号、图文匹配",
-        "",
-        "忽略的内容（以下问题无需报告）：",
-        "1. 转格式产生的无意义空格",
-        "2. 明显的年份错误",
-        "3. 题干开头标注的编号（如\"例2\"、\"清北班\"等）",
-        "4. 文档末尾的分层标记",
-        "5. 图片引用代码",
-        "6. 公式冗余部分",
-        "",
-        "### 强制返回格式（严格遵守，只输出Markdown）",
-        "## 题目基础信息",
-        "- 题目序号：{题目文件夹名}",
-        "- 题干编号：题干开头标注的编号",
-        "- 有无配图：有/无",
-        "",
-        "## 1. 文字内容校对",
-        "逐条列出。若无问题，写\"无问题\"",
-        "## 2. 公式与符号格式校对",
-        "逐条列出。若无问题，写\"无问题\"",
-        "## 3. 题干与情景严谨性评估",
-        "逐条列出。若无问题，写\"无问题\"",
-        "## 4. 解析内容审核",
-        "逐条列出。若无问题，写\"无问题\"",
-        "## 5. 答案正确性校验",
-        "判断对错，给出简要解题过程。",
-        "## 6. 校对总结",
-        "无问题 / 轻微问题 / 一般问题 / 严重错误",
-    ]
-    if not os.path.exists(PROMPT_FILE):
-        with open(PROMPT_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"system_prompt_lines": default_lines}, f, ensure_ascii=False, indent=2)
-        return "\n".join(default_lines)
+def _load_prompt_from_file(filepath, key):
+    """从JSON文件读取指定key的prompt行列表并拼接为字符串"""
     try:
-        with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if key in data and isinstance(data[key], list):
+            return "\n".join(data[key])
+    except Exception:
+        pass
+    return None
+
+def load_subject_question_prompt(subject):
+    """加载指定学科的题目校对提示词"""
+    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
+    prompt = _load_prompt_from_file(path, "question_prompt_lines")
+    if prompt:
+        return prompt
+    # 回退到旧的提示词文件
+    return _load_legacy_prompt(PROMPT_FILE)
+
+def load_subject_knowledge_prompt(subject):
+    """加载指定学科的知识校对提示词"""
+    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
+    prompt = _load_prompt_from_file(path, "knowledge_prompt_lines")
+    if prompt:
+        return prompt
+    # 回退到旧的知识提示词文件
+    return _load_legacy_prompt(KNOWLEDGE_PROMPT_FILE)
+
+def _load_legacy_prompt(filepath):
+    """兼容旧版提示词文件格式"""
+    if not os.path.exists(filepath):
+        return ""
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if "system_prompt_lines" in data and isinstance(data["system_prompt_lines"], list):
             return "\n".join(data["system_prompt_lines"])
@@ -563,48 +632,34 @@ def load_system_prompt():
             return data["system_prompt"]
     except Exception:
         pass
-    return "\n".join(default_lines)
+    return ""
 
-def load_knowledge_prompt():
-    default_lines = [
-        "你现在是资深高中物理教研员，需要对高中物理知识讲解文本进行严格校对。",
-        "输入内容为纯知识讲解的Markdown文本及可能包含的配图。",
-        "# 校对范围：",
-        "1. 文字校对 2. 公式符号 3. 知识严谨性",
-        "4. 知识结构 5. 图文匹配 6. 格式规范",
-        "# 忽略的内容：",
-        "1. 转格式产生的空格 2. 无关年份错误 3. 图片引用代码本身",
-        "# 强制返回格式（严格遵守，只输出Markdown）",
-        "请按原文本行号顺序逐条列出问题：",
-        "- **行号**：X",
-        "- **问题类型**：文字/公式符号/概念逻辑/结构排版/图文匹配/格式规范",
-        "- **问题描述**：...",
-        "- **修改建议**：...",
-    ]
-    if not os.path.exists(KNOWLEDGE_PROMPT_FILE):
-        with open(KNOWLEDGE_PROMPT_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"system_prompt_lines": default_lines}, f, ensure_ascii=False, indent=2)
-        return "\n".join(default_lines)
-    try:
-        with open(KNOWLEDGE_PROMPT_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if "system_prompt_lines" in data and isinstance(data["system_prompt_lines"], list):
-            return "\n".join(data["system_prompt_lines"])
-        if "system_prompt" in data:
-            return data["system_prompt"]
-    except Exception:
-        pass
-    return "\n".join(default_lines)
+def get_full_question_prompt(subject):
+    """获取指定学科的完整题目校对提示词（含工具说明）"""
+    base = load_subject_question_prompt(subject)
+    tool_instructions = _get_tool_instructions(subject)
+    return base + "\n" + tool_instructions if tool_instructions else base
 
-SYSTEM_PROMPT = load_system_prompt()
-KNOWLEDGE_SYSTEM_PROMPT = load_knowledge_prompt()
+def get_full_knowledge_prompt(subject):
+    """获取指定学科的完整知识校对提示词（含工具说明）"""
+    base = load_subject_knowledge_prompt(subject)
+    tool_instructions = _get_tool_instructions(subject)
+    return base + "\n" + tool_instructions if tool_instructions else base
+
+# 启动时默认加载物理提示词（与默认学科一致）
+SYSTEM_PROMPT = get_full_question_prompt("物理")
+KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理")
 MAX_RETRY = 2; TIME_OUT = 480; QUESTION_INTERVAL = 1; MAX_FILE_SIZE = 10 * 1024 * 1024
 
-def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt):
+def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None):
+    """调用 LLM API，支持可选的符号计算工具调用"""
     err_msg = ""
+    tool_instances = tools or []
+    openai_tools = [_tool_to_openai(t) for t in tool_instances] if tool_instances else None
     chat_url = api_url.rstrip("/")
     if not chat_url.endswith("/chat/completions"):
         chat_url += "/chat/completions"
+
     for retry in range(MAX_RETRY + 1):
         try:
             messages = [
@@ -618,10 +673,41 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt):
                 "model": model, "messages": messages,
                 "temperature": 0.3, "reasoning_effort": "high"
             }
+            if openai_tools:
+                payload["tools"] = openai_tools
+
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            choice = resp.json()["choices"][0]
+
+            # 处理 tool calls 循环（最多 5 轮）
+            loop = 0
+            while choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
+                if loop >= 5:
+                    return "**工具调用超限：** 模型进行了超过5轮工具调用，已中止。"
+                # 将 assistant 消息（含 tool_calls）加入历史
+                messages.append(choice["message"])
+                for tc in choice["message"]["tool_calls"]:
+                    tool_name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = _execute_tool(tool_instances, tool_name, args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result[:4000]  # 限制结果长度
+                    })
+                    log(f"   🔧 {tool_name}({json.dumps(args, ensure_ascii=False)[:120]})")
+                # 继续调用
+                resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
+                resp.raise_for_status()
+                choice = resp.json()["choices"][0]
+                loop += 1
+
+            return choice["message"]["content"]
         except Exception as e:
             err_msg = str(e)
             if retry < MAX_RETRY:
@@ -655,7 +741,7 @@ def collect_paper_dirs(base_path):
 class IntegratedApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("物理题目处理工具（整合版）")
+        self.root.title("多学科题目处理工具 v1.5（整合版）")
         self.root.geometry("1050x750")
         self.root.minsize(900, 650)
 
@@ -663,6 +749,7 @@ class IntegratedApp:
         self.source_mode = tk.StringVar(value="讲义")   # 来源：讲义/试卷
         self.exec_mode = tk.StringVar(value="完整流程")  # 执行：完整流程/仅拆分/仅校对
         self.output_dir = tk.StringVar(value="output")
+        self.current_subject = tk.StringVar(value="物理")  # 当前学科
 
         # 讲义选项
         self.clean_enabled = tk.BooleanVar(value=True)
@@ -746,7 +833,16 @@ class IntegratedApp:
         ttk.Radiobutton(f1, text="仅校对", variable=self.exec_mode, value="仅校对",
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
 
-        # --- 第2行：转换设置区 ---
+        # --- 第2行：学科选择 ---
+        f_subj = ttk.Frame(self.root, padding=(10, 0, 10, 5))
+        f_subj.pack(fill=tk.X)
+        ttk.Label(f_subj, text="校对学科：").pack(side=tk.LEFT)
+        self.subject_combo = ttk.Combobox(f_subj, textvariable=self.current_subject,
+                                          values=SUBJECTS, state="readonly", width=10)
+        self.subject_combo.pack(side=tk.LEFT, padx=6)
+        self.subject_combo.bind("<<ComboboxSelected>>", self.on_subject_changed)
+
+        # --- 第3行：转换设置区 ---
         self.frame_convert_settings = ttk.Frame(self.root, padding=10)
         self.frame_convert_settings.pack(fill=tk.X)
 
@@ -811,6 +907,16 @@ class IntegratedApp:
     # ===== 模式切换 =====
     def on_mode_changed(self):
         self.update_ui_for_mode()
+
+    def on_subject_changed(self, event=None):
+        """学科切换时重新加载对应的提示词"""
+        subject = self.current_subject.get()
+        global SYSTEM_PROMPT, KNOWLEDGE_SYSTEM_PROMPT
+        SYSTEM_PROMPT = get_full_question_prompt(subject)
+        KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt(subject)
+        tool_count = len(SUBJECT_TOOLS.get(subject, []))
+        tool_info = f"，{tool_count}个符号计算工具可用" if tool_count else ""
+        log(f"📚 已切换到：{subject}（提示词已更新{tool_info}）")
 
     def update_ui_for_mode(self):
         exec_mode = self.exec_mode.get()
@@ -1174,7 +1280,9 @@ class IntegratedApp:
                                     log(f"   ❌ 图片读取失败 {img_file}: {e}")
 
                     prompt = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
-                    res = call_api(api_url, api_key, model, md_content, images_b64, q_name, prompt)
+                    subject = self.current_subject.get()
+                    subject_tools = SUBJECT_TOOLS.get(subject, [])
+                    res = call_api(api_url, api_key, model, md_content, images_b64, q_name, prompt, tools=subject_tools)
                     self.proofread_result[q_dir] = res
                     paper_results[q_dir] = res
 
@@ -1217,7 +1325,7 @@ class IntegratedApp:
             defaultextension=".md", filetypes=[("Markdown", "*.md")], title="保存校对报告"
         )
         if not path: return
-        report = "# 物理题目批量校对总报告\n\n"
+        report = f"# {self.current_subject.get()}题目批量校对总报告\n\n"
         for q_path, content in self.proofread_result.items():
             paper_name = os.path.basename(os.path.dirname(q_path))
             q_name = os.path.basename(q_path)

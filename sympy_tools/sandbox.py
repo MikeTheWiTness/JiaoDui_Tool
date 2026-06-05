@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import time
@@ -20,10 +21,13 @@ def execute_code(code: str, timeout: int = 30) -> dict:
 
     start = time.monotonic()
     try:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.run(
             [sys.executable, "-c", "import sys; exec(sys.stdin.read())"],
-            input=code,
-            capture_output=True, text=True, timeout=timeout,
+            input=code, env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout,
         )
         elapsed = int((time.monotonic() - start) * 1000)
 
