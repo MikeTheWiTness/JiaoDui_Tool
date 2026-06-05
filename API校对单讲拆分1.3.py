@@ -8,186 +8,135 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 import requests
 
 CONFIG_FILE = "api_config.json"
-PROMPT_FILE = "API_Proofreading_Prompt.json"   # 新增：提示词配置文件
-KNOWLEDGE_PROMPT_FILE = "API_Knowledge_Prompt.json"    # 新增：知识校对提示词
+PROMPTS_DIR = "prompts"
+SUBJECTS = ["物理", "语文", "数学", "英语", "化学", "生物", "政治", "历史", "地理"]
 
-# ================== 题目校对 System Prompt ==================
-def load_system_prompt():
-    """从 JSON 文件加载系统提示词，支持两种格式：
-       1. {"system_prompt": "完整字符串"}
-       2. {"system_prompt_lines": ["行1", "行2", ...]}
-       如果文件不存在则创建默认的数组格式。
-    """
-    default_lines = [
-        "你现在是资深高中物理教研员，需要对高中物理题目进行全方位严格校对，",
-        "输入内容包含：题目Markdown文本 + 题目配图（若有），",
-        "校对范围：",
-        "1. 文字校对：错别字、漏字、语病、标点符号、排版问题",
-        "2. 公式符号：物理公式、希腊字母、单位、矢量符号、上下标、格式规范",
-        "3. 题干严谨性：物理情景描述、条件完整性、已知量/未知量表述",
-        "4. 解析内容：解题逻辑、公式引用、步骤完整性、物理规律适用性",
-        "5. 答案校验：计算结果、取值、单位、结论正确性、易错点",
-        "6. 格式规范：换行、编号、图文匹配",
-        "",
-        "忽略的内容（以下问题无需报告）：",
-        "1. 转格式产生的无意义空格（如选项前、解答开头的大量连续空格）",
-        "2. 明显的年份错误（例如将当前年份错写为其他年份，如“2026山东高考真题”）",
-        "3. 题干开头标注的编号（例如“例2”、“练3”、“清北班”、“双一流班1”、“一本班3”、“教师版”等字样）",
-        "4. 文档末尾存在的分层标记“目标清北班”、“目标双一流班”、“目标一本班”、“系统班”等字样",
-        "5. 图片在文档中的位置标记或图片引用代码（如 `![](image.png)`）",
-        "6. 公式中不影响渲染的冗余部分（如 `{a}^{b}`）",
-        "",
-        "### 强制返回格式（严格遵守，只输出Markdown）",
-        "## 题目基础信息",
-        "- 题目序号：{题目文件夹名}",
-        "- 题干编号：题干开头标注的编号",
-        "- 有无配图：有/无",
-        "",
-        "## 1. 文字内容校对",
-        "逐条列出发现的错误及修改建议。若无问题，写“无问题”",
-        "",
-        "## 2. 公式与符号格式校对",
-        "逐条列出公式错误、符号缺失、单位错误、格式不规范问题及修正方案。若无问题，写“无问题”",
-        "",
-        "## 3. 题干与情景严谨性评估",
-        "评估物理情景、条件描述、边界条件是否完整严谨。若无问题，写“无问题”",
-        "",
-        "## 4. 解析内容审核",
-        "分析解析逻辑错误、步骤缺失、规律误用、推导问题。若无问题，写“无问题”",
-        "",
-        "## 5. 答案正确性校验",
-        "判断答案对错，计算错误、结论错误、单位错误等问题。给出你的简要解题过程。",
-        "",
-        "## 6. 校对总结",
-        "简短总结本题整体问题等级：",
-        "- 无问题",
-        "- 轻微问题（标点、书写习惯，但不影响正确性）",
-        "- 一般问题（错字、漏字，描述不精确、表达不严谨）",
-        "- 严重错误（解析错误、答案错误）"
-    ]
-    KNOWLEDGE_PROMPT_FILE = "API_Knowledge_Prompt.json"
+# ========================= 符号计算工具集成 =========================
+try:
+    from sympy_tools.tools import (
+        EvaluateExpressionTool, SolveEquationTool, CheckEqualityTool,
+        SimplifyExpressionTool, SolvePhysicsFormulaTool, DimensionalAnalysisTool,
+        ComputeLimitTool, VectorOperationsTool, MagneticDeflectionTool,
+        BalanceChemicalEquationTool, StoichiometryCalcTool,
+    )
+    _TOOLS_AVAILABLE = True
+except ImportError:
+    _TOOLS_AVAILABLE = False
 
-    if not os.path.exists(PROMPT_FILE):
-        with open(PROMPT_FILE, "w", encoding="utf-8") as f:
-            json.dump({"system_prompt_lines": default_lines}, f, ensure_ascii=False, indent=2)
-        return "\n".join(default_lines)
+def _build_tool_map():
+    if not _TOOLS_AVAILABLE:
+        return {}
+    return {
+        "数学": [
+            EvaluateExpressionTool(), SolveEquationTool(), CheckEqualityTool(),
+            SimplifyExpressionTool(), ComputeLimitTool(),
+        ],
+        "物理": [
+            EvaluateExpressionTool(), SolveEquationTool(), SolvePhysicsFormulaTool(),
+            DimensionalAnalysisTool(), VectorOperationsTool(), MagneticDeflectionTool(),
+        ],
+        "化学": [
+            EvaluateExpressionTool(), SolveEquationTool(),
+            BalanceChemicalEquationTool(), StoichiometryCalcTool(),
+        ],
+        "生物": [
+            EvaluateExpressionTool(), SolveEquationTool(),
+        ],
+    }
+
+SUBJECT_TOOLS = _build_tool_map()
+
+def _tool_to_openai(tool):
+    schema = tool.args_schema.model_json_schema()
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": {
+                "type": "object",
+                "properties": schema.get("properties", {}),
+                "required": schema.get("required", []),
+            }
+        }
+    }
+
+def _execute_tool(tool_instances, tool_name, arguments):
+    for t in tool_instances:
+        if t.name == tool_name:
+            try:
+                return t._run(**arguments)
+            except Exception as e:
+                return f"工具执行错误: {e}"
+    return f"未知工具: {tool_name}"
+
+def _get_tool_instructions(subject):
+    if subject not in SUBJECT_TOOLS or not SUBJECT_TOOLS[subject]:
+        return ""
+    tool_list = [f"- `{t.name}`: {t.description}" for t in SUBJECT_TOOLS[subject]]
+    return (
+        "\n## 可用的符号计算工具\n"
+        "你在校对该学科题目时，可以使用以下工具进行**实算验证**，不得凭模型自身估算数值结果：\n"
+        + "\n".join(tool_list) + "\n"
+        "使用规则：对于需要数值计算、方程求解、公式推导验证的步骤，必须调用对应工具获取精确结果。"
+        "仅文字类问题（错别字、语病等）不需要调用工具。\n"
+    )
+
+# ========================= 提示词加载 =========================
+
+def _load_prompt_from_file(filepath, key):
     try:
-        with open(PROMPT_FILE, "r", encoding="utf-8") as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        if "system_prompt_lines" in data and isinstance(data["system_prompt_lines"], list):
-            return "\n".join(data["system_prompt_lines"])
-        if "system_prompt" in data:
-            return data["system_prompt"]
+        if key in data and isinstance(data[key], list):
+            return "\n".join(data[key])
     except Exception:
         pass
-    return "\n".join(default_lines)
+    return None
 
-# ================== 知识校对 System Prompt ==================
-def load_knowledge_prompt():
-    """从 JSON 文件加载知识校对提示词"""
-    default_lines = [
-            "你现在是资深高中物理教研员，需要对高中物理知识讲解文本进行严格校对。",
-            "",
-            "输入内容为纯知识讲解的Markdown文本及可能包含的配图。",
-            "",
-            "# 校对范围：",
-            "1. 文字校对：错别字、漏字、语病、标点符号、排版问题",
-            "2. 公式符号：物理公式、希腊字母、单位、矢量符号、上下标、格式规范",
-            "3. 知识严谨性：物理概念表述是否准确，定理/定律描述是否完整，推导逻辑是否自洽",
-            "4. 知识结构：段落条理是否清晰，层级标题是否恰当，有无冗余或缺失",
-            "5. 图文匹配：图片是否与文字解说对应，图片引用路径是否正确，有无缺失图片",
-            "6. 格式规范：Markdown换行、编号、强调标记等使用是否规范",
-            "",
-            "# 忽略的内容：",
-            "1. 转格式产生的无意义空格（如段落开头的连续空格）",
-            "2. 无关的年份表述错误（如“2026高考”等）",
-            "3. 图片引用代码本身（如 `![](image.png)`），但需关注配图是否缺失",
-            "4. 公式中不影响渲染的冗余部分（如 `{a}^{b}`）",
-            "",
-            "# 强制返回格式（严格遵守，只输出Markdown）",
-            "",
-            "请按**原文本行号顺序**（从第1行开始计数，包含空行和Markdown标记行）逐条列出发现的所有问题。每条问题格式如下：",
-            "",
-            "- **行号**：问题所在行号（若问题跨多行，写起始行号~结束行号）",
-            "- **问题类型**：从「文字」「公式符号」「概念逻辑」「结构排版」「图文匹配」「格式规范」中选其一",
-            "- **问题描述**：简要说明具体错误（错字、语病、公式缺失、概念不严谨等）",
-            "- **修改建议**：给出明确的修正方案",
-            "",
-            "输出示例：",
-            "```markdown",
-            "# 校对结果（按行排序）",
-            "",
-            "- **行号**：12  ",
-            "  **问题类型**：文字  ",
-            "  **问题描述**：错别字，“做匀束运动”应为“做匀速运动”  ",
-            "  **修改建议**：将“束”改为“速”",
-            "",
-            "- **行号**：24~26  ",
-            "  **问题类型**：公式符号  ",
-            "  **问题描述**：牛顿第二定律公式中未使用矢量符号，力与加速度应为矢量  ",
-            "  **修改建议**：将 `F=ma` 改为 `\\vec{F}=m\\vec{a}`",
-            "",
-            "- **行号**：41  ",
-            "  **问题类型**：图文匹配  ",
-            "  **问题描述**：文字提到“如图3所示”，但该位置无图片引用，图片缺失  ",
-            "  **修改建议**：插入图3或调整文字描述",
-            "",
-            "...（按行号递增继续列出）",
-            "```",
-            "",
-            "若全文无任何问题，则输出：",
-            "```markdown",
-            "## 校对结果（按行排序）",
-            "",
-            "无问题",
-            "```",
-            "",
-            "在上述问题列表之后，请附加一个简短总结：",
-            "",
-            "```markdown",
-            "# 校对总结",
-            "",
-            "- **整体问题等级**：无问题 / 轻微问题 / 一般问题 / 严重错误  ",
-            "- **简要说明**：（例如：共发现3处问题，均为文字错别字，不影响理解。或：存在1处概念错误，需重点修正）",
-            "```"
-        ]
+def load_subject_question_prompt(subject):
+    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
+    prompt = _load_prompt_from_file(path, "question_prompt_lines")
+    if prompt:
+        return prompt
+    return ""
 
-    if not os.path.exists(KNOWLEDGE_PROMPT_FILE):
-        with open(KNOWLEDGE_PROMPT_FILE, "w", encoding="utf-8") as f:
-            json.dump({"system_prompt_lines": default_lines}, f, ensure_ascii=False, indent=2)
-        return "\n".join(default_lines)
+def load_subject_knowledge_prompt(subject):
+    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
+    prompt = _load_prompt_from_file(path, "knowledge_prompt_lines")
+    if prompt:
+        return prompt
+    return ""
 
-    try:
-        with open(KNOWLEDGE_PROMPT_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if "system_prompt_lines" in data and isinstance(data["system_prompt_lines"], list):
-            return "\n".join(data["system_prompt_lines"])
-        if "system_prompt" in data:
-            return data["system_prompt"]
-    except Exception:
-        pass
+def get_full_question_prompt(subject):
+    base = load_subject_question_prompt(subject)
+    tool_instructions = _get_tool_instructions(subject)
+    return base + tool_instructions if tool_instructions else base
 
-    return "\n".join(default_lines)
+def get_full_knowledge_prompt(subject):
+    base = load_subject_knowledge_prompt(subject)
+    tool_instructions = _get_tool_instructions(subject)
+    return base + tool_instructions if tool_instructions else base
 
-# 全局加载两种提示词
-SYSTEM_PROMPT = load_system_prompt()
-KNOWLEDGE_SYSTEM_PROMPT = load_knowledge_prompt()   # 新增全局变量
+SYSTEM_PROMPT = get_full_question_prompt("物理")
+KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理")
 
 MAX_RETRY = 2
 TIME_OUT = 480
 QUESTION_INTERVAL = 1
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
-class PhysicsProofreadApp:
+class MultiSubjectProofreadApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("高中物理题目批量校对工具【自动导出报告版】")
-        self.root.geometry("1250x750")  # 窗口高度750，匹配缩减后的组件高度
+        self.root.title("多学科题目批量校对工具 v1.5")
+        self.root.geometry("1250x780")
 
         self.task_running = False
         self.task_interrupt = False
         self.paper_list = []
-        self.proofread_result = {}      # 全局汇总结果 {题目目录路径: 校对内容}
+        self.proofread_result = {}
+        self.current_subject = tk.StringVar(value="物理")
         self.api_config = self.load_config()
         self.setup_ui()
 
@@ -224,6 +173,15 @@ class PhysicsProofreadApp:
         self.var_model.set("")
         self.var_output_dir.set("")
 
+    def on_subject_changed(self, event=None):
+        subject = self.current_subject.get()
+        global SYSTEM_PROMPT, KNOWLEDGE_SYSTEM_PROMPT
+        SYSTEM_PROMPT = get_full_question_prompt(subject)
+        KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt(subject)
+        tool_count = len(SUBJECT_TOOLS.get(subject, []))
+        tool_info = f"，{tool_count}个符号计算工具可用" if tool_count else ""
+        self.log(f"学科已切换至：{subject}（提示词已更新{tool_info}）")
+
     def setup_ui(self):
         frame_api = ttk.LabelFrame(self.root, text="API 配置", padding=10)
         frame_api.pack(fill=tk.X, padx=10, pady=5)
@@ -243,10 +201,18 @@ class PhysicsProofreadApp:
         ttk.Button(frame_api, text="保存配置", command=self.save_config).grid(row=0, column=2, padx=8)
         ttk.Button(frame_api, text="重置", command=self.reset_config).grid(row=1, column=2, padx=8)
 
-        # 新增输出文件夹配置行
         ttk.Label(frame_api, text="报告输出目录：", width=12).grid(row=3, column=0, sticky=tk.W)
         ttk.Entry(frame_api, textvariable=self.var_output_dir, width=60).grid(row=3, column=1, padx=5, pady=3)
         ttk.Button(frame_api, text="浏览", command=self.select_output_dir).grid(row=3, column=2, padx=8)
+
+        # 学科选择
+        frame_subj = ttk.Frame(self.root, padding=(10, 0, 10, 5))
+        frame_subj.pack(fill=tk.X)
+        ttk.Label(frame_subj, text="校对学科：").pack(side=tk.LEFT)
+        self.subject_combo = ttk.Combobox(frame_subj, textvariable=self.current_subject,
+                                          values=SUBJECTS, state="readonly", width=10)
+        self.subject_combo.pack(side=tk.LEFT, padx=6)
+        self.subject_combo.bind("<<ComboboxSelected>>", self.on_subject_changed)
 
         frame_top = ttk.Frame(self.root, padding=10)
         frame_top.pack(fill=tk.X)
@@ -263,7 +229,7 @@ class PhysicsProofreadApp:
         frame_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         ttk.Label(frame_left, text="待校对试卷清单").pack(anchor=tk.W)
-        self.paper_listbox = tk.Listbox(frame_left, height=9)  # 从18改为9
+        self.paper_listbox = tk.Listbox(frame_left, height=9)
         self.paper_listbox.pack(fill=tk.BOTH, expand=True, pady=5)
 
         frame_btn = ttk.Frame(frame_left)
@@ -275,7 +241,7 @@ class PhysicsProofreadApp:
         frame_right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
 
         ttk.Label(frame_right, text="实时校对日志").pack(anchor=tk.W)
-        self.log_text = scrolledtext.ScrolledText(frame_right, height=9)  # 从18改为9
+        self.log_text = scrolledtext.ScrolledText(frame_right, height=9)
         self.log_text.pack(fill=tk.BOTH, expand=True, pady=5)
 
         frame_bottom = ttk.Frame(self.root, padding=10)
@@ -354,7 +320,6 @@ class PhysicsProofreadApp:
         if self.task_running:
             return
 
-        # 如果设置了输出目录但不存在则尝试创建
         if output_dir and not os.path.exists(output_dir):
             try:
                 os.makedirs(output_dir)
@@ -372,10 +337,9 @@ class PhysicsProofreadApp:
         t = threading.Thread(target=self.task_loop, daemon=True)
         t.start()
 
-    def call_api_with_retry(self, api_url, api_key, model, md_text, images, q_title, system_prompt):
-        """
-        新增 system_prompt 参数，用于动态切换校对提示词
-        """
+    def call_api_with_retry(self, api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None):
+        tool_instances = tools or []
+        openai_tools = [_tool_to_openai(t) for t in tool_instances] if tool_instances else None
         err_msg = ""
         chat_url = api_url.rstrip("/")
         if not chat_url.endswith("/chat/completions"):
@@ -390,18 +354,45 @@ class PhysicsProofreadApp:
                     ]}
                 ]
                 payload = {
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0.3,
-                    "reasoning_effort": "high"
+                    "model": model, "messages": messages,
+                    "temperature": 0.3, "reasoning_effort": "high"
                 }
+                if openai_tools:
+                    payload["tools"] = openai_tools
+
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
                 resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
                 resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"]
+                choice = resp.json()["choices"][0]
+
+                # 处理 tool calls 循环
+                loop = 0
+                while choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
+                    if loop >= 5:
+                        return "**工具调用超限：** 模型进行了超过5轮工具调用，已中止。"
+                    messages.append(choice["message"])
+                    for tc in choice["message"]["tool_calls"]:
+                        tool_name = tc["function"]["name"]
+                        try:
+                            args = json.loads(tc["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            args = {}
+                        result = _execute_tool(tool_instances, tool_name, args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result[:4000]
+                        })
+                        self.log(f"   🔧 {tool_name}({json.dumps(args, ensure_ascii=False)[:120]})")
+                    resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
+                    resp.raise_for_status()
+                    choice = resp.json()["choices"][0]
+                    loop += 1
+
+                return choice["message"]["content"]
             except Exception as e:
                 err_msg = str(e)
                 if retry < MAX_RETRY:
@@ -414,6 +405,8 @@ class PhysicsProofreadApp:
         api_key = self.var_api_key.get().strip()
         model = self.var_model.get().strip()
         output_dir = self.var_output_dir.get().strip()
+        subject = self.current_subject.get()
+        subject_tools = SUBJECT_TOOLS.get(subject, [])
 
         try:
             for paper_path in self.paper_list:
@@ -424,22 +417,19 @@ class PhysicsProofreadApp:
 
                 paper_results = {}
 
-                # 收集题目目录和知识目录
                 question_dirs = []
                 knowledge_dir = None
                 for item in os.listdir(paper_path):
                     full_item = os.path.join(paper_path, item)
                     if not os.path.isdir(full_item):
                         continue
-                    if "题" in item:                     # 识别第x题
+                    if "题" in item:
                         question_dirs.append(full_item)
-                    elif item == "知识":                 # 识别知识文件夹
+                    elif item == "知识":
                         knowledge_dir = full_item
 
-                # 按数字排序题目
                 question_dirs.sort(key=lambda x: int(''.join([c for c in os.path.basename(x) if c.isdigit()]) or 0))
 
-                # 处理顺序：所有题目 → 知识
                 all_dirs = question_dirs[:]
                 if knowledge_dir is not None:
                     all_dirs.append(knowledge_dir)
@@ -453,7 +443,6 @@ class PhysicsProofreadApp:
 
                     self.log(f"正在校对{task_type}：{q_name}（超时上限{TIME_OUT}s）")
 
-                    # 读取 md 文件（题目目录和知识目录内都只有一个 .md）
                     md_content = ""
                     for f in os.listdir(q_dir):
                         if f.endswith(".md"):
@@ -461,7 +450,6 @@ class PhysicsProofreadApp:
                                 md_content = f_md.read()
                             break
 
-                    # 读取图片（逻辑不变）
                     images_base64 = []
                     img_dir = os.path.join(q_dir, "images")
                     if os.path.exists(img_dir):
@@ -476,11 +464,7 @@ class PhysicsProofreadApp:
                                     with open(img_path, "rb") as f_img:
                                         img_b64 = base64.b64encode(f_img.read()).decode()
                                     ext = img_file.lower().split('.')[-1]
-                                    mime = "image/jpeg"
-                                    if ext == "png":
-                                        mime = "image/png"
-                                    elif ext == "gif":
-                                        mime = "image/gif"
+                                    mime = "image/png" if ext == "png" else "image/gif" if ext == "gif" else "image/jpeg"
                                     images_base64.append({
                                         "type": "image_url",
                                         "image_url": {"url": f"data:{mime};base64,{img_b64}"}
@@ -488,11 +472,8 @@ class PhysicsProofreadApp:
                                 except Exception as e:
                                     self.log(f"❌ 读取图片失败 {img_file}: {str(e)}")
 
-                    # 选择对应的提示词
                     prompt_to_use = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
-
-                    # 调用 API（传入动态提示词）
-                    res = self.call_api_with_retry(api_url, api_key, model, md_content, images_base64, q_name, prompt_to_use)
+                    res = self.call_api_with_retry(api_url, api_key, model, md_content, images_base64, q_name, prompt_to_use, tools=subject_tools)
 
                     self.proofread_result[q_dir] = res
                     paper_results[q_dir] = res
@@ -504,7 +485,6 @@ class PhysicsProofreadApp:
 
                     time.sleep(QUESTION_INTERVAL)
 
-                # 自动导出试卷报告
                 if not self.task_interrupt and paper_results:
                     self.auto_export_paper_report(paper_path, paper_results, output_dir)
 
@@ -522,7 +502,6 @@ class PhysicsProofreadApp:
             self.stop_btn.config(state=tk.DISABLED)
 
     def auto_export_paper_report(self, paper_path, paper_results, output_dir):
-        """自动导出单套试卷的校对报告"""
         if not output_dir:
             self.log("⚠️ 未设置报告输出目录，跳过自动导出")
             return
@@ -534,7 +513,6 @@ class PhysicsProofreadApp:
                 return
 
         paper_name = os.path.basename(paper_path)
-        # 替换文件名中的非法字符（简单处理）
         safe_name = "".join(c for c in paper_name if c not in r'\/:*?"<>|')
         report_filename = f"{safe_name}_校对报告.md"
         report_path = os.path.join(output_dir, report_filename)
@@ -542,9 +520,7 @@ class PhysicsProofreadApp:
         report_content = f"# {paper_name} 校对报告\n\n"
         for q_path, content in paper_results.items():
             q_name = os.path.basename(q_path)
-            report_content += f"## 题目：{q_name}\n"
-            report_content += content
-            report_content += "\n\n---\n\n"
+            report_content += f"## 题目：{q_name}\n{content}\n\n---\n\n"
 
         try:
             with open(report_path, "w", encoding="utf-8") as f:
@@ -565,14 +541,12 @@ class PhysicsProofreadApp:
         if not save_path:
             return
 
-        report = "# 高中物理题目批量校对总报告\n\n"
-        # 按试卷分组显示（可选，当前按题目逐个展示）
+        subject = self.current_subject.get()
+        report = f"# {subject}题目批量校对总报告\n\n"
         for q_path, content in self.proofread_result.items():
             paper_name = os.path.basename(os.path.dirname(q_path))
             q_name = os.path.basename(q_path)
-            report += f"## {paper_name} - {q_name}\n"
-            report += content
-            report += "\n\n---\n\n"
+            report += f"## {paper_name} - {q_name}\n{content}\n\n---\n\n"
 
         with open(save_path, "w", encoding="utf-8") as f:
             f.write(report)
@@ -582,5 +556,5 @@ class PhysicsProofreadApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = PhysicsProofreadApp(root)
+    app = MultiSubjectProofreadApp(root)
     root.mainloop()
