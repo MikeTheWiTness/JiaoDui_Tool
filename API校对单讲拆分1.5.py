@@ -1,4 +1,4 @@
-import os
+import os, sys
 import json
 import base64
 import time
@@ -7,8 +7,16 @@ import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 import requests
 
-CONFIG_FILE = "api_config.json"
-PROMPTS_DIR = "prompts"
+def _app_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _app_path(rel):
+    return os.path.join(_app_dir(), rel)
+
+CONFIG_FILE = _app_path("api_config.json")
+PROMPTS_DIR = _app_path("prompts")
 SUBJECTS = ["物理", "语文", "数学", "英语", "化学", "生物", "政治", "历史", "地理"]
 
 # ========================= 符号计算工具集成 =========================

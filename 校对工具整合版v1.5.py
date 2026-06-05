@@ -8,11 +8,21 @@
   输出：output/拆题结果/ + output/校对报告/
 """
 
-import os, re, json, base64, time, shutil, subprocess, threading, zipfile
+import os, re, json, base64, time, shutil, subprocess, threading, zipfile, sys
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import requests
+
+# ========================= 路径工具 =========================
+def _app_dir():
+    """exe 模式返回 exe 所在目录，否则返回脚本所在目录"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _app_path(rel):
+    return os.path.join(_app_dir(), rel)
 
 # ========================= 符号计算工具集成 =========================
 try:
@@ -91,11 +101,11 @@ def _get_tool_instructions(subject):
 
 # ========================= 全局配置 =========================
 DEFAULT_OUTPUT = "output"
-ENV_FILE = ".env"
-PROMPT_FILE = "API_Proofreading_Prompt.json"
-KNOWLEDGE_PROMPT_FILE = "API_Knowledge_Prompt.json"
-TITLE_PATTERNS_FILE = "title_patterns.json"
-PROMPTS_DIR = "prompts"
+ENV_FILE = _app_path(".env")
+PROMPT_FILE = _app_path("API_Proofreading_Prompt.json")
+KNOWLEDGE_PROMPT_FILE = _app_path("API_Knowledge_Prompt.json")
+TITLE_PATTERNS_FILE = _app_path("title_patterns.json")
+PROMPTS_DIR = _app_path("prompts")
 SUBJECTS = ["物理", "语文", "数学", "英语", "化学", "生物", "政治", "历史", "地理"]
 
 def load_env_config():
