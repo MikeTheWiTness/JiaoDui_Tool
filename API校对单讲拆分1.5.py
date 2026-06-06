@@ -6,6 +6,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 import requests
+import subject_config
 
 def _app_dir():
     if getattr(sys, 'frozen', False):
@@ -15,9 +16,8 @@ def _app_dir():
 def _app_path(rel):
     return os.path.join(_app_dir(), rel)
 
-CONFIG_FILE = _app_path("api_config.json")
+ENV_FILE = _app_path(".env")
 PROMPTS_DIR = _app_path("prompts")
-SUBJECTS = ["物理", "语文", "数学", "英语", "化学", "生物", "政治", "历史", "地理"]
 
 # ========================= 符号计算工具集成 =========================
 try:
@@ -92,42 +92,24 @@ def _get_tool_instructions(subject):
 
 # ========================= 提示词加载 =========================
 
-def _load_prompt_from_file(filepath, key):
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if key in data and isinstance(data[key], list):
-            return "\n".join(data[key])
-    except Exception:
-        pass
-    return None
+def load_subject_question_prompt(subject, level=None):
+    return subject_config.get_question_prompt(subject, level)
 
-def load_subject_question_prompt(subject):
-    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
-    prompt = _load_prompt_from_file(path, "question_prompt_lines")
-    if prompt:
-        return prompt
-    return ""
+def load_subject_knowledge_prompt(subject, level=None):
+    return subject_config.get_knowledge_prompt(subject, level)
 
-def load_subject_knowledge_prompt(subject):
-    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
-    prompt = _load_prompt_from_file(path, "knowledge_prompt_lines")
-    if prompt:
-        return prompt
-    return ""
-
-def get_full_question_prompt(subject):
-    base = load_subject_question_prompt(subject)
+def get_full_question_prompt(subject, level=None):
+    base = load_subject_question_prompt(subject, level)
     tool_instructions = _get_tool_instructions(subject)
     return base + tool_instructions if tool_instructions else base
 
-def get_full_knowledge_prompt(subject):
-    base = load_subject_knowledge_prompt(subject)
+def get_full_knowledge_prompt(subject, level=None):
+    base = load_subject_knowledge_prompt(subject, level)
     tool_instructions = _get_tool_instructions(subject)
     return base + tool_instructions if tool_instructions else base
 
-SYSTEM_PROMPT = get_full_question_prompt("物理")
-KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理")
+SYSTEM_PROMPT = get_full_question_prompt("物理", "高中")
+KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理", "高中")
 
 MAX_RETRY = 2
 TIME_OUT = 480
@@ -144,36 +126,46 @@ class MultiSubjectProofreadApp:
         self.task_interrupt = False
         self.paper_list = []
         self.proofread_result = {}
+        self.current_level = tk.StringVar(value="高中")
         self.current_subject = tk.StringVar(value="物理")
         self.api_config = self.load_config()
         self.setup_ui()
 
     def load_config(self):
-        default_cfg = {"api_url": "", "api_key": "", "model_name": "", "output_dir": ""}
-        if os.path.exists(CONFIG_FILE):
+        """从 .env 读取 API 配置"""
+        cfg = {"api_url": "", "api_key": "", "model_name": "", "output_dir": ""}
+        if os.path.exists(ENV_FILE):
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if "base_url" in loaded and "api_url" not in loaded:
-                    loaded["api_url"] = loaded["base_url"]
-                if "model" in loaded and "model_name" not in loaded:
-                    loaded["model_name"] = loaded["model"]
-                for key in default_cfg:
-                    if key not in loaded:
-                        loaded[key] = default_cfg[key]
-                return loaded
-            except:
-                return default_cfg
-        return default_cfg
+                with open(ENV_FILE, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        if '=' in line:
+                            k, v = line.split('=', 1)
+                            k = k.strip().lower()
+                            v = v.strip()
+                            if k == 'api_url':
+                                cfg['api_url'] = v
+                            elif k == 'api_key':
+                                cfg['api_key'] = v
+                            elif k == 'model_name':
+                                cfg['model_name'] = v
+            except Exception:
+                pass
+        return cfg
 
     def save_config(self):
-        self.api_config["api_url"] = self.var_api_url.get().strip()
-        self.api_config["api_key"] = self.var_api_key.get().strip()
-        self.api_config["model_name"] = self.var_model.get().strip()
-        self.api_config["output_dir"] = self.var_output_dir.get().strip()
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.api_config, f, ensure_ascii=False, indent=2)
-        messagebox.showinfo("提示", "API配置及输出目录保存成功！")
+        """保存 API 配置到 .env"""
+        api_url = self.var_api_url.get().strip()
+        api_key = self.var_api_key.get().strip()
+        model = self.var_model.get().strip()
+        with open(ENV_FILE, 'w', encoding='utf-8') as f:
+            f.write(f"API_URL={api_url}\n")
+            f.write(f"API_KEY={api_key}\n")
+            f.write(f"MODEL_NAME={model}\n")
+        self.api_config = {"api_url": api_url, "api_key": api_key, "model_name": model, "output_dir": self.var_output_dir.get().strip()}
+        messagebox.showinfo("提示", "API配置已保存到 .env")
 
     def reset_config(self):
         self.var_api_url.set("")
@@ -181,14 +173,24 @@ class MultiSubjectProofreadApp:
         self.var_model.set("")
         self.var_output_dir.set("")
 
+    def on_level_changed(self, event=None):
+        """学段切换时更新学科下拉列表"""
+        level = self.current_level.get()
+        subjects = subject_config.get_subjects_for_level(level)
+        self.subject_combo['values'] = subjects
+        if self.current_subject.get() not in subjects:
+            self.current_subject.set(subjects[0])
+        self.on_subject_changed()
+
     def on_subject_changed(self, event=None):
         subject = self.current_subject.get()
+        level = self.current_level.get()
         global SYSTEM_PROMPT, KNOWLEDGE_SYSTEM_PROMPT
-        SYSTEM_PROMPT = get_full_question_prompt(subject)
-        KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt(subject)
+        SYSTEM_PROMPT = get_full_question_prompt(subject, level)
+        KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt(subject, level)
         tool_count = len(SUBJECT_TOOLS.get(subject, []))
         tool_info = f"，{tool_count}个符号计算工具可用" if tool_count else ""
-        self.log(f"学科已切换至：{subject}（提示词已更新{tool_info}）")
+        self.log(f"学科已切换至：{level}{subject}（提示词已更新{tool_info}）")
 
     def setup_ui(self):
         frame_api = ttk.LabelFrame(self.root, text="API 配置", padding=10)
@@ -213,12 +215,18 @@ class MultiSubjectProofreadApp:
         ttk.Entry(frame_api, textvariable=self.var_output_dir, width=60).grid(row=3, column=1, padx=5, pady=3)
         ttk.Button(frame_api, text="浏览", command=self.select_output_dir).grid(row=3, column=2, padx=8)
 
-        # 学科选择
+        # 学段+学科选择
         frame_subj = ttk.Frame(self.root, padding=(10, 0, 10, 5))
         frame_subj.pack(fill=tk.X)
+        ttk.Label(frame_subj, text="学段：").pack(side=tk.LEFT)
+        self.level_combo = ttk.Combobox(frame_subj, textvariable=self.current_level,
+                                        values=subject_config.LEVELS, state="readonly", width=6)
+        self.level_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self.level_combo.bind("<<ComboboxSelected>>", self.on_level_changed)
         ttk.Label(frame_subj, text="校对学科：").pack(side=tk.LEFT)
         self.subject_combo = ttk.Combobox(frame_subj, textvariable=self.current_subject,
-                                          values=SUBJECTS, state="readonly", width=10)
+                                          values=subject_config.get_subjects_for_level("高中"),
+                                          state="readonly", width=8)
         self.subject_combo.pack(side=tk.LEFT, padx=6)
         self.subject_combo.bind("<<ComboboxSelected>>", self.on_subject_changed)
 
@@ -357,7 +365,7 @@ class MultiSubjectProofreadApp:
                 messages = [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": [
-                        {"type": "text", "text": f"题目编号：{q_title}\n题目内容：\n{md_text}"},
+                        {"type": "text", "text": f"编号：{q_title}\n内容：\n{md_text}"},
                         *images
                     ]}
                 ]
@@ -528,7 +536,7 @@ class MultiSubjectProofreadApp:
         report_content = f"# {paper_name} 校对报告\n\n"
         for q_path, content in paper_results.items():
             q_name = os.path.basename(q_path)
-            report_content += f"## 题目：{q_name}\n{content}\n\n---\n\n"
+            report_content += f"## {q_name}\n{content}\n\n---\n\n"
 
         try:
             with open(report_path, "w", encoding="utf-8") as f:
@@ -550,7 +558,8 @@ class MultiSubjectProofreadApp:
             return
 
         subject = self.current_subject.get()
-        report = f"# {subject}题目批量校对总报告\n\n"
+        level = self.current_level.get()
+        report = f"# {level}{subject}校对总报告\n\n"
         for q_path, content in self.proofread_result.items():
             paper_name = os.path.basename(os.path.dirname(q_path))
             q_name = os.path.basename(q_path)

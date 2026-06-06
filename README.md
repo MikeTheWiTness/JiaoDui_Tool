@@ -1,32 +1,41 @@
 # 校对工具（JiaoDui Tool）
 
-高中全学科题目处理流水线 —— Word 转 Markdown → 智能拆分 → AI 校对
+K-12 全学科题目处理流水线 —— Word 转 Markdown → 智能拆分 → AI 校对
 
 ## 功能概览
 
 1. **格式转换**：Word `.docx` → Markdown（Pandoc，保留 LaTeX 数学公式）
-2. **智能拆分**：按题目标题/题号拆分为独立目录，自动提取配图
-3. **AI 校对**：调用 LLM API 对每道题目进行全方位审校，支持符号计算工具实算验证
+2. **智能拆分**：两种模式自适应不同学科
+   - **题目模式**（理科）：按粗体标题标记拆为独立单题
+   - **版块模式**（英语）：按章节标题拆为教学版块
+3. **AI 校对**：调用 LLM API（`reasoning_effort: high`），支持符号计算工具实算验证
 
-支持两种来源模式：
-- **讲义模式**：按标题模式（如 `**例1**`、`**清北班例题**`）拆分
+支持两种文档来源：
+- **讲义模式**：按学科配置拆分（title/section 两种子模式）
 - **试卷模式**：按题号（`1．`、`2．`）拆分，自适应答案位置
 
-## 支持的学科（v1.5）
+## 学段与学科
 
-| 学科 | 符号计算工具 |
-|------|-------------|
-| 语文 | — |
-| 数学 | 表达式求值、方程求解、等价判断、化简、极限 |
-| 英语 | — |
-| 物理 | 表达式求值、方程求解、公式求解、量纲分析、向量运算、磁场偏转 |
-| 化学 | 表达式求值、方程求解、方程式配平、化学计量计算 |
-| 生物 | 表达式求值、方程求解 |
-| 政治 | — |
-| 历史 | — |
-| 地理 | — |
+| 学段 | 学科数 | 学科列表 |
+|------|--------|---------|
+| 小学 | 5 | 语文、数学、英语、科学、道法 |
+| 初中 | 10 | 语文、数学、英语、物理、化学、生物、科学、道法、历史、地理 |
+| 高中 | 9 | 语文、数学、英语、物理、化学、生物、政治、历史、地理 |
 
-每学科有独立的两套 AI 提示词：**题目校对**（question）和**知识校对**（knowledge），存储在 `prompts/` 目录。
+每学科+学段有独立配置文件（`subjects/{学段}/{学科}/config.json`），包含 AI 提示词和拆分规则。
+
+| 学科 | 符号计算工具 | 拆分模式 |
+|------|-------------|---------|
+| 语文 | — | title |
+| 数学 | 表达式求值、方程求解、等价判断、化简、极限 | title |
+| 英语 | — | **section**（按章节拆版块，跳过知识提取） |
+| 物理 | 表达式求值、方程求解、公式求解、量纲分析、向量运算、磁场偏转 | title |
+| 化学 | 表达式求值、方程求解、方程式配平、化学计量计算 | title |
+| 生物 | 表达式求值、方程求解 | title |
+| 政治/道法 | — | title |
+| 历史 | — | title |
+| 地理 | — | title |
+| 科学 | — | title |
 
 ## 快速开始
 
@@ -41,82 +50,74 @@ python 校对工具整合版v1.5.py
 python API校对单讲拆分1.5.py
 ```
 
-1. 点击 **⚙️ API 配置** 填写接口地址、密钥和模型名
-2. 选择**来源模式**（讲义/试卷）和**学科**
-3. 添加 Word 文件，点击**开始处理**
+1. 点击 **⚙️ API 配置** 填写接口地址、密钥和模型名（自动保存到 `.env`）
+2. 选择**学段**（小学/初中/高中）和**学科**
+3. 选择文档**来源**（讲义/试卷）和**执行模式**
+4. 添加 Word 文件，点击**开始处理**
 
 ## 版本历史
+
+### v1.6 — 学段分级 + 版块拆分模式
+
+- 重构配置目录：`subjects/{小学/初中/高中}/{学科}/config.json`，共 24 个配置文件
+- 新增 `subject_config.py` 统一配置加载模块（回退兼容旧 `prompts/` 和 `title_patterns.json`）
+- GUI 改为双下拉菜单：学段选择 + 学科选择，学科列表随学段动态更新
+- 新增 **section 拆分模式**（英语讲义）：
+  - 按 `##` 章节标题拆分为完整教学版块（`板块N/` 目录）
+  - 自动跳过知识提取（版块本身即完整教学单元）
+  - 提示词适配版块校对（输出"版块基础信息"而非"题目基础信息"）
+- 初中政治 → 道法；新增小学/初中科学和道法
+- `API校对单讲拆分1.5.py` 改为读取 `.env`（与整合版统一）
+- 修复切换学段时学科列表未联动、转换全部失败时按钮卡住等问题
+- `reasoning_effort: "high"` 思考模式已启用
 
 ### v1.5 — 多学科支持 + 符号计算工具集成
 
 - 新增 9 学科独立 AI 提示词（`prompts/` 目录）
 - GUI 新增学科选择下拉菜单，切换时自动重载提示词和工具
-- 将 `sympy_tools` 符号计算工具接入 API 调用链：
-  - 数学 5 工具、物理 6 工具、化学 4 工具、生物 2 工具
-  - API 支持 function-calling 循环，模型可调用工具**实算验证**答案
-- 新增化学符号计算工具：方程式配平（线性代数法）、化学计量计算
+- 将 `sympy_tools` 符号计算工具接入 API 调用链
+- 新增化学符号计算工具：方程式配平、化学计量计算
 - 新增标题拆分模式：`变式N_例M`、`变式N`
-- 修复 Windows 子进程 GBK 编码问题
-- `API校对单讲拆分1.5.py` 同步升级为多学科工具（学科选择 + 工具集成 + tool calling）
+- `API校对单讲拆分1.5.py` 同步升级为多学科工具
 
 ### v1.4 — 符号计算工具包
 
-- 新增 `sympy_tools/` 模块，提供 10 个符号计算工具：
-  - `evaluate_expression` — 表达式求值
-  - `solve_equation` — 方程求解
-  - `check_equality` — 表达式等价判断
-  - `simplify_expression` — 化简/展开/因式分解
-  - `solve_physics_formula` — 物理公式求解
-  - `dimensional_analysis` — 量纲分析
-  - `compute_limit` — 极限计算
-  - `geometry_construct` / `geometry_measure` — 几何构造与测量
-  - `vector_operations` — 向量运算
-  - `magnetic_deflection` — 磁场偏转（解析几何法）
-- 代码沙箱：子进程隔离执行，安全检测拦截危险操作
-- 整合版 GUI：三工具合一（讲义拆分 + 试卷拆分 + API 校对）
+- 新增 `sympy_tools/` 模块（10 个工具）
+- 代码沙箱：子进程隔离执行，安全检测
 
 ### v1.3 — 整合版基线
 
-- 讲义拆分工具：Word → Markdown → 按标题模式拆题 + 提取知识
-- 试卷拆分工具（组卷网格式）：自适应答案位置（随题/末尾）
-- API 校对工具：物理题目 AI 审校（豆包模型 / 火山方舟 API）
+- 三工具合一（讲义拆分 + 试卷拆分 + API 校对）
 - Pandoc 转换管线，LaTeX 数学公式保留
 - `title_patterns.json` 可配置标题匹配规则
 
 ## 目录结构
 
 ```
-校对v1.3/
-├── 校对工具整合版v1.5.py    # 主程序（转换 + 拆分 + 校对，GUI）
-├── API校对单讲拆分1.5.py     # 独立校对工具（仅校对，GUI）
-├── 讲义拆分题目和知识转md.py  # 讲义拆分（旧版，独立运行）
-├── 组卷网试卷转md.py          # 试卷拆分（旧版，独立运行）
-├── sympy_tools/              # 符号计算工具包（v1.4+）
-│   ├── __init__.py
-│   ├── tools.py              # 工具定义（LangChain BaseTool）
-│   ├── templates.py          # SymPy 代码生成模板
-│   ├── sandbox.py            # 沙箱执行环境
-│   └── safety.py             # 安全检测
-├── prompts/                  # 学科提示词（v1.5）
-│   ├── 语文.json
-│   ├── 数学.json
-│   ├── 英语.json
-│   ├── 物理.json
-│   ├── 化学.json
-│   ├── 生物.json
-│   ├── 政治.json
-│   ├── 历史.json
-│   └── 地理.json
-├── tests/                    # 测试
-│   ├── __init__.py
-│   └── test_sympy_tools.py
+校对v1.5/
+├── 校对工具整合版v1.5.py       # 主程序（转换 + 拆分 + 校对，GUI）
+├── API校对单讲拆分1.5.py        # 独立校对工具（仅校对，GUI）
+├── 讲义拆分题目和知识转md.py    # 讲义拆分（独立运行，GUI）
+├── 组卷网试卷转md.py            # 试卷拆分（独立运行，GUI）
+├── subject_config.py           # 统一配置加载模块（v1.6）
+├── subjects/                   # 学段+学科配置（v1.6）
+│   ├── 小学/（语文、数学、英语、科学、道法）
+│   ├── 初中/（语数外理化生科道历地）
+│   └── 高中/（语数外理化生政历地）
+│       └── {学科}/config.json  # 提示词 + 拆分规则
+├── sympy_tools/                # 符号计算工具包
+│   ├── tools.py, templates.py, sandbox.py, safety.py
+├── prompts/                    # 旧版学科提示词（高中回退用）
+├── tests/test_sympy_tools.py
 ├── API_Proofreading_Prompt.json   # 旧版物理提示词（回退用）
 ├── API_Knowledge_Prompt.json      # 旧版物理知识提示词（回退用）
-├── title_patterns.json            # 讲义标题匹配规则
-├── CLAUDE.md                      # Claude Code 项目指南
-├── .gitignore
-└── output/                        # 默认输出目录
+├── title_patterns.json            # 旧版标题匹配规则（回退用）
+├── .env                           # API 配置
+├── CLAUDE.md
+└── output/
     ├── 拆题结果/
+    │   ├── {讲义名}/板块1/...   # section 模式
+    │   └── {讲义名}/第1题/...   # title 模式
     └── 校对报告/
 ```
 
@@ -129,26 +130,31 @@ python API校对单讲拆分1.5.py
 ```
 API_URL=https://ark.cn-beijing.volces.com/api/v3
 API_KEY=your-api-key
-MODEL_NAME=your-model-id
+MODEL_NAME=doubao-seed-2-0-pro-260215
 ```
 
-### 讲义标题匹配规则
+### 学科配置
 
-编辑 `title_patterns.json`，支持正则表达式：
+每个学段+学科一个 `subjects/{学段}/{学科}/config.json`：
 
 ```json
 {
-  "patterns": [
-    "例\\d+",
-    "练\\d+",
-    "清北班\\d+",
-    "变式\\d+",
-    "变式\\d+_例\\d+"
-  ]
+  "question_prompt_lines": ["系统提示词行..."],
+  "knowledge_prompt_lines": ["知识提示词行..."],
+  "lecture_split": {
+    "split_mode": "title",
+    "wrapped_patterns": ["例\\d+", "练\\d+"],
+    "unwrapped_patterns": [],
+    "section_boundary": true
+  },
+  "exam_split": {
+    "question_pattern": "^(\d+)．"
+  }
 }
 ```
 
-匹配规则：行首出现 `**{pattern}**` 格式的加粗文本即视为题目标题。
+- `split_mode: "section"` + `section_pattern: "^##\\s"` 启用英语版块拆分
+- 缺失字段自动回退到旧 `prompts/{学科}.json` / `title_patterns.json`
 
 ## 数据流
 
@@ -157,7 +163,9 @@ MODEL_NAME=your-model-id
   → Pandoc → 原始 .md（+ _images/media/）
   → LaTeX 转义修复 / 后处理
   → 表格清理（讲义）或公式格式修正（试卷）
-  → 拆分为 第N题/第N题.md + 第N题/images/
-  → （可选）提取 知识/知识.md + 知识/images/
-  → AI 校对（学科提示词 + 符号计算工具）→ _校对报告.md
+  → 拆分：
+      title 模式   → 第N题/第N题.md + images/ + 知识/
+      section 模式 → 板块N/板块N.md + images/
+  → AI 校对（学科+学段提示词 + 符号计算工具 + reasoning_effort=high）
+  → _校对报告.md
 ```

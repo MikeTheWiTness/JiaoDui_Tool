@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import requests
+import subject_config
 
 # ========================= 路径工具 =========================
 def _app_dir():
@@ -106,7 +107,6 @@ PROMPT_FILE = _app_path("API_Proofreading_Prompt.json")
 KNOWLEDGE_PROMPT_FILE = _app_path("API_Knowledge_Prompt.json")
 TITLE_PATTERNS_FILE = _app_path("title_patterns.json")
 PROMPTS_DIR = _app_path("prompts")
-SUBJECTS = ["物理", "语文", "数学", "英语", "化学", "生物", "政治", "历史", "地理"]
 
 def load_env_config():
     """从 .env 文件读取 API 配置"""
@@ -147,7 +147,11 @@ def log(msg):
 
 # ==================== 工具一：讲义管线 ====================
 
-def load_title_patterns():
+def load_title_patterns(subject=None, level=None):
+    """加载标题模式。如果指定学科，从 subject_config 加载；否则回退旧 title_patterns.json"""
+    if subject:
+        cfg = subject_config.load_subject_config(subject, level)
+        return cfg.get("lecture_wrapped_patterns", [])
     default_patterns = [
         r'例\d+', r'练\d+', r'清北班', r'清北班例题', r'清北班备用',
         r'教师版', r'一本班', r'一本班\d+', r'双一流班', r'双一流班\d+',
@@ -224,35 +228,65 @@ def clean_md_file(md_file):
     with open(md_file, 'w', encoding='utf-8') as f:
         f.write(cleaned)
 
-def split_by_title_patterns(md_file, output_root, base_name, do_clean):
+def split_by_title_patterns(md_file, output_root, base_name, do_clean, subject=None, level=None):
     """讲义模式：按标题模式拆分题目"""
     with open(md_file, 'r', encoding='utf-8') as f:
         md_content = f.read()
-    patterns = load_title_patterns()
-    title_compiled = compile_title_patterns(patterns)
+
+    # 检查是否启用 section 模式
+    split_mode = "title"
+    section_pat = None
+    if subject:
+        split_mode = subject_config.get_lecture_split_mode(subject, level)
+        if split_mode == "section":
+            section_pat = subject_config.get_section_pattern(subject, level)
+
     lines = md_content.splitlines()
     questions = []
-    current_title = None
-    current_content = []
-    in_question = False
-    for line in lines:
-        stripped = line.strip()
-        is_title = any(p.match(stripped) for p in title_compiled)
-        is_section = stripped.startswith('#') and not stripped.startswith('**')
-        if is_title:
-            if current_title is not None:
-                questions.append((current_title, '\n'.join(current_content)))
-            current_title = stripped
-            current_content = [line]
-            in_question = True
-        elif is_section and in_question:
-            questions.append((current_title, '\n'.join(current_content)))
-            current_title = None; current_content = []; in_question = False
-        else:
-            if in_question:
+
+    if split_mode == "section" and section_pat:
+        # ---- Section 模式：按 ## / ### 标题拆分 ----
+        current_title = "引言"
+        current_content = []
+        for line in lines:
+            stripped = line.strip()
+            if section_pat.match(stripped):
+                if current_content:
+                    questions.append((current_title, '\n'.join(current_content)))
+                current_title = stripped
+                current_content = [line]
+            else:
                 current_content.append(line)
-    if current_title is not None:
-        questions.append((current_title, '\n'.join(current_content)))
+        if current_content:
+            questions.append((current_title, '\n'.join(current_content)))
+    else:
+        # ---- Title 模式：按粗体题目标记拆分（原有逻辑） ----
+        if subject:
+            title_compiled = subject_config.get_compiled_title_patterns(subject, level)
+        else:
+            patterns = load_title_patterns()
+            title_compiled = compile_title_patterns(patterns)
+        current_title = None
+        current_content = []
+        in_question = False
+        for line in lines:
+            stripped = line.strip()
+            is_title = any(p.match(stripped) for p in title_compiled)
+            is_section = stripped.startswith('#') and not stripped.startswith('**')
+            if is_title:
+                if current_title is not None:
+                    questions.append((current_title, '\n'.join(current_content)))
+                current_title = stripped
+                current_content = [line]
+                in_question = True
+            elif is_section and in_question:
+                questions.append((current_title, '\n'.join(current_content)))
+                current_title = None; current_content = []; in_question = False
+            else:
+                if in_question:
+                    current_content.append(line)
+        if current_title is not None:
+            questions.append((current_title, '\n'.join(current_content)))
 
     if not questions:
         log("   ⚠️ 未识别到任何题目，跳过分割")
@@ -271,10 +305,14 @@ def split_by_title_patterns(md_file, output_root, base_name, do_clean):
         if not sdir or not sdir.exists(): return None
         c = sdir / fname; return c if c.exists() else None
 
+    unit_prefix = "板块" if split_mode == "section" else "第"
+    unit_suffix = "" if split_mode == "section" else "题"
+
     total_copied = [0]; total_missing = [0]
     img_pat = re.compile(r'!\[(.*?)\]\((.*?)\)')
     for idx, (title, content) in enumerate(questions, start=1):
-        q_dir = target_root / f"第{idx}题"
+        q_dir_name = f"{unit_prefix}{idx}{unit_suffix}"
+        q_dir = target_root / q_dir_name
         q_dir.mkdir(exist_ok=True)
         img_dir = q_dir / "images"; img_dir.mkdir(exist_ok=True)
         def repl(m):
@@ -292,18 +330,21 @@ def split_by_title_patterns(md_file, output_root, base_name, do_clean):
                 total_missing[0] += 1
                 return m.group(0)
         new_content = img_pat.sub(repl, content)
-        (q_dir / f"第{idx}题.md").write_text(new_content, encoding='utf-8')
+        (q_dir / f"{q_dir_name}.md").write_text(new_content, encoding='utf-8')
 
     log(f"   📂 拆分完成: {len(questions)} 题, 图片 {total_copied[0]} 张")
     return True
 
-def generate_knowledge_with_images(cleaned_md, output_root, base_name):
+def generate_knowledge_with_images(cleaned_md, output_root, base_name, subject=None, level=None):
     """讲义模式：提取知识文件夹"""
     with open(cleaned_md, 'r', encoding='utf-8') as f:
         content = f.read()
     lines = content.splitlines()
-    patterns = load_title_patterns()
-    compiled = compile_title_patterns(patterns)
+    if subject:
+        compiled = subject_config.get_compiled_title_patterns(subject, level)
+    else:
+        patterns = load_title_patterns()
+        compiled = compile_title_patterns(patterns)
     filtered = []
     in_question = False
     for line in lines:
@@ -611,23 +652,13 @@ def _load_prompt_from_file(filepath, key):
         pass
     return None
 
-def load_subject_question_prompt(subject):
-    """加载指定学科的题目校对提示词"""
-    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
-    prompt = _load_prompt_from_file(path, "question_prompt_lines")
-    if prompt:
-        return prompt
-    # 回退到旧的提示词文件
-    return _load_legacy_prompt(PROMPT_FILE)
+def load_subject_question_prompt(subject, level=None):
+    """加载指定学科+学段的题目校对提示词（委托 subject_config）"""
+    return subject_config.get_question_prompt(subject, level)
 
-def load_subject_knowledge_prompt(subject):
-    """加载指定学科的知识校对提示词"""
-    path = os.path.join(PROMPTS_DIR, f"{subject}.json")
-    prompt = _load_prompt_from_file(path, "knowledge_prompt_lines")
-    if prompt:
-        return prompt
-    # 回退到旧的知识提示词文件
-    return _load_legacy_prompt(KNOWLEDGE_PROMPT_FILE)
+def load_subject_knowledge_prompt(subject, level=None):
+    """加载指定学科+学段的知识校对提示词（委托 subject_config）"""
+    return subject_config.get_knowledge_prompt(subject, level)
 
 def _load_legacy_prompt(filepath):
     """兼容旧版提示词文件格式"""
@@ -644,21 +675,21 @@ def _load_legacy_prompt(filepath):
         pass
     return ""
 
-def get_full_question_prompt(subject):
-    """获取指定学科的完整题目校对提示词（含工具说明）"""
-    base = load_subject_question_prompt(subject)
+def get_full_question_prompt(subject, level=None):
+    """获取指定学科+学段的完整题目校对提示词（含工具说明）"""
+    base = load_subject_question_prompt(subject, level)
     tool_instructions = _get_tool_instructions(subject)
     return base + "\n" + tool_instructions if tool_instructions else base
 
-def get_full_knowledge_prompt(subject):
-    """获取指定学科的完整知识校对提示词（含工具说明）"""
-    base = load_subject_knowledge_prompt(subject)
+def get_full_knowledge_prompt(subject, level=None):
+    """获取指定学科+学段的完整知识校对提示词（含工具说明）"""
+    base = load_subject_knowledge_prompt(subject, level)
     tool_instructions = _get_tool_instructions(subject)
     return base + "\n" + tool_instructions if tool_instructions else base
 
-# 启动时默认加载物理提示词（与默认学科一致）
-SYSTEM_PROMPT = get_full_question_prompt("物理")
-KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理")
+# 启动时默认加载高中物理提示词（与默认学段学科一致）
+SYSTEM_PROMPT = get_full_question_prompt("物理", "高中")
+KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理", "高中")
 MAX_RETRY = 2; TIME_OUT = 480; QUESTION_INTERVAL = 1; MAX_FILE_SIZE = 10 * 1024 * 1024
 
 def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None):
@@ -675,7 +706,7 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, t
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
-                    {"type": "text", "text": f"题目编号：{q_title}\n题目内容：\n{md_text}"},
+                    {"type": "text", "text": f"编号：{q_title}\n内容：\n{md_text}"},
                     *images
                 ]}
             ]
@@ -759,6 +790,7 @@ class IntegratedApp:
         self.source_mode = tk.StringVar(value="讲义")   # 来源：讲义/试卷
         self.exec_mode = tk.StringVar(value="完整流程")  # 执行：完整流程/仅拆分/仅校对
         self.output_dir = tk.StringVar(value="output")
+        self.current_level = tk.StringVar(value="高中")
         self.current_subject = tk.StringVar(value="物理")  # 当前学科
 
         # 讲义选项
@@ -843,12 +875,18 @@ class IntegratedApp:
         ttk.Radiobutton(f1, text="仅校对", variable=self.exec_mode, value="仅校对",
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
 
-        # --- 第2行：学科选择 ---
+        # --- 第2行：学段+学科选择 ---
         f_subj = ttk.Frame(self.root, padding=(10, 0, 10, 5))
         f_subj.pack(fill=tk.X)
+        ttk.Label(f_subj, text="学段：").pack(side=tk.LEFT)
+        self.level_combo = ttk.Combobox(f_subj, textvariable=self.current_level,
+                                        values=subject_config.LEVELS, state="readonly", width=6)
+        self.level_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self.level_combo.bind("<<ComboboxSelected>>", self.on_level_changed)
         ttk.Label(f_subj, text="校对学科：").pack(side=tk.LEFT)
         self.subject_combo = ttk.Combobox(f_subj, textvariable=self.current_subject,
-                                          values=SUBJECTS, state="readonly", width=10)
+                                          values=subject_config.get_subjects_for_level(self.current_level.get()),
+                                          state="readonly", width=8)
         self.subject_combo.pack(side=tk.LEFT, padx=6)
         self.subject_combo.bind("<<ComboboxSelected>>", self.on_subject_changed)
 
@@ -918,15 +956,26 @@ class IntegratedApp:
     def on_mode_changed(self):
         self.update_ui_for_mode()
 
+    def on_level_changed(self, event=None):
+        """学段切换时更新学科下拉列表并重新加载提示词"""
+        level = self.current_level.get()
+        subjects = subject_config.get_subjects_for_level(level)
+        self.subject_combo['values'] = subjects
+        # 当前学科不在新列表中则切换到第一个
+        if self.current_subject.get() not in subjects:
+            self.current_subject.set(subjects[0])
+        self.on_subject_changed()
+
     def on_subject_changed(self, event=None):
         """学科切换时重新加载对应的提示词"""
         subject = self.current_subject.get()
+        level = self.current_level.get()
         global SYSTEM_PROMPT, KNOWLEDGE_SYSTEM_PROMPT
-        SYSTEM_PROMPT = get_full_question_prompt(subject)
-        KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt(subject)
+        SYSTEM_PROMPT = get_full_question_prompt(subject, level)
+        KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt(subject, level)
         tool_count = len(SUBJECT_TOOLS.get(subject, []))
         tool_info = f"，{tool_count}个符号计算工具可用" if tool_count else ""
-        log(f"📚 已切换到：{subject}（提示词已更新{tool_info}）")
+        log(f"📚 已切换到：{level}{subject}（提示词已更新{tool_info}）")
 
     def update_ui_for_mode(self):
         exec_mode = self.exec_mode.get()
@@ -1159,16 +1208,24 @@ class IntegratedApp:
 
             # 3. 拆分题目
             log("   ✂️ 开始拆分题目...")
+            subject = self.current_subject.get()
+            level = self.current_level.get()
             if source == "讲义":
                 split_ok = split_by_title_patterns(raw_md, split_root, basename,
-                                                   do_clean=self.clean_enabled.get())
+                                                   do_clean=self.clean_enabled.get(),
+                                                   subject=subject, level=level)
             else:
                 split_ok = split_by_question_numbers(raw_md, split_root, basename)
 
             if split_ok:
-                # 4. 讲义：提取知识
+                # 4. 讲义：提取知识（section 模式跳过，版块自成单元）
                 if source == "讲义" and self.knowledge_enabled.get():
-                    generate_knowledge_with_images(raw_md, split_root, basename)
+                    split_mode = subject_config.get_lecture_split_mode(subject, level)
+                    if split_mode != "section":
+                        generate_knowledge_with_images(raw_md, split_root, basename,
+                                                       subject=subject, level=level)
+                    else:
+                        log("   📘 section 模式：跳过知识提取（版块即单元）")
 
                 converted_dir = os.path.join(split_root, basename)
                 converted_dirs.append(converted_dir)
@@ -1178,21 +1235,23 @@ class IntegratedApp:
         log(f"✅ 转换完成，成功 {len(converted_dirs)}/{total}")
 
         # 完整流程：自动衔接校对
-        if exec_mode == "完整流程" and converted_dirs:
-            log("\n📋 自动加载到校对清单...")
-            for d in converted_dirs:
-                name = os.path.basename(d)
-                entry = (d, name)
-                if entry not in self.proofread_list:
-                    self.proofread_list.append(entry)
-            self.root.after(0, self.refresh_listbox)
-            log(f"   已添加 {len(converted_dirs)} 套试卷，即将开始校对...")
-
-            # 自动开始校对
-            self.root.after(500, self.start_proofread)
-
-        # 仅拆分模式直接恢复按钮；完整流程等校对结束后恢复
-        if exec_mode != "完整流程":
+        if exec_mode == "完整流程":
+            if converted_dirs:
+                log("\n📋 自动加载到校对清单...")
+                for d in converted_dirs:
+                    name = os.path.basename(d)
+                    entry = (d, name)
+                    if entry not in self.proofread_list:
+                        self.proofread_list.append(entry)
+                self.root.after(0, self.refresh_listbox)
+                log(f"   已添加 {len(converted_dirs)} 套试卷，即将开始校对...")
+                # 自动开始校对（校对结束后恢复按钮）
+                self.root.after(500, self.start_proofread)
+            else:
+                log("   ⚠️ 没有成功转换的文件，无法进入校对")
+                self.root.after(0, lambda: self.btn_action.config(state=tk.NORMAL))
+        else:
+            # 仅拆分模式直接恢复按钮
             self.root.after(0, lambda: self.btn_action.config(state=tk.NORMAL))
 
     # ===== 校对管线 =====
@@ -1323,7 +1382,7 @@ class IntegratedApp:
         report = f"# {paper_name} 校对报告\n\n"
         for q_path, content in paper_results.items():
             q_name = os.path.basename(q_path)
-            report += f"## 题目：{q_name}\n{content}\n\n---\n\n"
+            report += f"## {q_name}\n{content}\n\n---\n\n"
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
         log(f"📄 已导出：{report_path}")
@@ -1335,7 +1394,7 @@ class IntegratedApp:
             defaultextension=".md", filetypes=[("Markdown", "*.md")], title="保存校对报告"
         )
         if not path: return
-        report = f"# {self.current_subject.get()}题目批量校对总报告\n\n"
+        report = f"# {self.current_level.get()}{self.current_subject.get()}校对总报告\n\n"
         for q_path, content in self.proofread_result.items():
             paper_name = os.path.basename(os.path.dirname(q_path))
             q_name = os.path.basename(q_path)

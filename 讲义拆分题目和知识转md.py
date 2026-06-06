@@ -22,6 +22,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
+import subject_config
 
 # ==================== 全局配置 ====================
 WORD_SUFFIX = (".docx", ".doc")
@@ -197,12 +198,15 @@ def clean_md_file(md_file):
         return False
 
 # ==================== 题目分割功能 ====================
-def load_title_patterns(config_path=None):
+def load_title_patterns(config_path=None, subject=None, level=None):
     """
     加载题目标题的正则模式。
-    如果未提供配置文件，则尝试加载当前目录下的 title_patterns.json。
+    如果指定学科，从 subject_config 加载；否则尝试加载 title_patterns.json。
     如果文件不存在或读取失败，则使用内置默认模式。
     """
+    if subject:
+        cfg = subject_config.load_subject_config(subject, level)
+        return cfg.get("lecture_wrapped_patterns", [])
     default_patterns = [
         r'例\d+',
         r'练\d+',
@@ -247,7 +251,8 @@ def compile_title_patterns(patterns):
         full_pat = r'^\*\*' + pat + r'\*\*.*$'
         compiled.append(re.compile(full_pat))
     return compiled
-def generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_img_dir):
+
+def generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_img_dir, subject=None, level=None):
     """
     从清洗后的 md 生成知识版本，复制涉及图片到 knowledge_dir/images，
     并将 Markdown 保存为 knowledge_dir/{basename}_知识.md
@@ -258,8 +263,11 @@ def generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_img_
         content = f.read()
     lines = content.splitlines()
 
-    patterns = load_title_patterns()
-    title_compiled = compile_title_patterns(patterns)
+    if subject:
+        title_compiled = subject_config.get_compiled_title_patterns(subject, level)
+    else:
+        patterns = load_title_patterns()
+        title_compiled = compile_title_patterns(patterns)
 
     filtered_lines = []
     in_question = False
@@ -329,7 +337,7 @@ def generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_img_
     if missing > 0:
         log_print(f"      知识图片缺失: {missing} 张")
 
-def split_md_into_questions(md_file, output_root, base_name):
+def split_md_into_questions(md_file, output_root, base_name, subject=None, level=None):
     """
     将清洗后的 md 文件按题目拆分为多个子目录。
     图片源目录固定为：md_file所在目录 / {base_name}_images / media
@@ -338,35 +346,61 @@ def split_md_into_questions(md_file, output_root, base_name):
     with open(md_file, 'r', encoding='utf-8') as f:
         md_content = f.read()
 
-    # 加载题目模式
-    patterns = load_title_patterns()
-    title_compiled = compile_title_patterns(patterns)
+    # 检查是否启用 section 模式
+    split_mode = "title"
+    section_pat = None
+    if subject:
+        split_mode = subject_config.get_lecture_split_mode(subject, level)
+        if split_mode == "section":
+            section_pat = subject_config.get_section_pattern(subject, level)
 
-    # 解析题目（与原代码相同，略）
     lines = md_content.splitlines()
     questions = []
-    current_title = None
-    current_content = []
-    in_question = False
 
-    for line in lines:
-        stripped = line.strip()
-        is_question_title = any(pat.match(stripped) for pat in title_compiled)
-        is_section_title = stripped.startswith('#') and not stripped.startswith('**')
-        if is_question_title:
-            if current_title is not None:
-                questions.append((current_title, '\n'.join(current_content)))
-            current_title = stripped
-            current_content = [line]
-            in_question = True
-        elif is_section_title and in_question:
-            questions.append((current_title, '\n'.join(current_content)))
-            current_title = None
-            current_content = []
-            in_question = False
-        else:
-            if in_question:
+    if split_mode == "section" and section_pat:
+        # ---- Section 模式：按 ## / ### 标题拆分 ----
+        current_title = "引言"
+        current_content = []
+        for line in lines:
+            stripped = line.strip()
+            if section_pat.match(stripped):
+                if current_content:
+                    questions.append((current_title, '\n'.join(current_content)))
+                current_title = stripped
+                current_content = [line]
+            else:
                 current_content.append(line)
+        if current_content:
+            questions.append((current_title, '\n'.join(current_content)))
+    else:
+        # ---- Title 模式：按粗体题目标记拆分（原有逻辑） ----
+        if subject:
+            title_compiled = subject_config.get_compiled_title_patterns(subject, level)
+        else:
+            patterns = load_title_patterns()
+            title_compiled = compile_title_patterns(patterns)
+        current_title = None
+        current_content = []
+        in_question = False
+
+        for line in lines:
+            stripped = line.strip()
+            is_question_title = any(pat.match(stripped) for pat in title_compiled)
+            is_section_title = stripped.startswith('#') and not stripped.startswith('**')
+            if is_question_title:
+                if current_title is not None:
+                    questions.append((current_title, '\n'.join(current_content)))
+                current_title = stripped
+                current_content = [line]
+                in_question = True
+            elif is_section_title and in_question:
+                questions.append((current_title, '\n'.join(current_content)))
+                current_title = None
+                current_content = []
+                in_question = False
+            else:
+                if in_question:
+                    current_content.append(line)
 
     if current_title is not None:
         questions.append((current_title, '\n'.join(current_content)))
@@ -413,9 +447,13 @@ def split_md_into_questions(md_file, output_root, base_name):
 
     # 分割题目
     total_copied = 0
+    unit_prefix = "板块" if split_mode == "section" else "第"
+    unit_suffix = "" if split_mode == "section" else "题"
+
     total_missing = 0
     for idx, (title, content) in enumerate(questions, start=1):
-        q_dir = target_root / f"第{idx}题"
+        q_dir_name = f"{unit_prefix}{idx}{unit_suffix}"
+        q_dir = target_root / q_dir_name
         q_dir.mkdir(exist_ok=True)
         img_dir = q_dir / "images"
         img_dir.mkdir(exist_ok=True)
@@ -454,11 +492,11 @@ def split_md_into_questions(md_file, output_root, base_name):
 
         new_content = img_pattern.sub(replace_img, content)
 
-        # 写入题目文件
-        q_md = q_dir / f"第{idx}题.md"
+        # 写入文件
+        q_md = q_dir / f"{q_dir_name}.md"
         with open(q_md, 'w', encoding='utf-8') as f:
             f.write(new_content)
-        log_print(f"   ✅ 已拆分第 {idx} 题: {title[:50]}... -> {q_dir}")
+        log_print(f"   ✅ 已拆分{unit_prefix}{idx}{unit_suffix}: {title[:50]}... -> {q_dir}")
         if copied_count > 0:
             log_print(f"      成功复制 {copied_count} 张图片")
         if missing_count > 0:
@@ -586,14 +624,20 @@ def run_conversion(output_root):
             target_root = Path(output_root) / basename
             target_root.mkdir(parents=True, exist_ok=True)
 
-            # 5. 生成知识文件夹（含图片）
+            # 5. 生成知识文件夹（含图片，section 模式跳过）
             knowledge_dir = target_root / "知识"
-            generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_media)
+            split_mode = subject_config.get_lecture_split_mode(subject_var.get(), level_var.get())
+            if split_mode != "section":
+                generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_media,
+                                               subject=subject_var.get(), level=level_var.get())
+            else:
+                log_print("   📘 section 模式：跳过知识提取（版块即单元）")
 
             # 6. 可选：按题目分割
             if split_var.get():
                 log_print("   ✂️ 开始按题目拆分...")
-                split_ok = split_md_into_questions(cleaned_md, output_root, basename)
+                split_ok = split_md_into_questions(cleaned_md, output_root, basename,
+                                                   subject=subject_var.get(), level=level_var.get())
                 if not split_ok:
                     log_print("   ⚠️ 未识别到题目，不进行分割")
             else:
@@ -636,8 +680,27 @@ frame_options = ttk.Frame(root, padding=(10, 0, 10, 10))
 frame_options.pack(fill=tk.X)
 clean_var = tk.BooleanVar(value=True)   # 默认清理表格
 split_var = tk.BooleanVar(value=True)   # 默认分割题目
+level_var = tk.StringVar(value="高中")
+subject_var = tk.StringVar(value="物理")
+
+def on_level_change(event=None):
+    subjects = subject_config.get_subjects_for_level(level_var.get())
+    subject_combo['values'] = subjects
+    if subject_var.get() not in subjects:
+        subject_var.set(subjects[0])
+
 ttk.Checkbutton(frame_options, text="清理表格边框和格式", variable=clean_var).pack(side=tk.LEFT, padx=5)
 ttk.Checkbutton(frame_options, text="分割题目到子目录", variable=split_var).pack(side=tk.LEFT, padx=5)
+ttk.Label(frame_options, text="  学段：").pack(side=tk.LEFT)
+level_combo = ttk.Combobox(frame_options, textvariable=level_var, values=subject_config.LEVELS,
+                           state="readonly", width=6)
+level_combo.pack(side=tk.LEFT)
+level_combo.bind("<<ComboboxSelected>>", on_level_change)
+ttk.Label(frame_options, text="学科：").pack(side=tk.LEFT)
+subject_combo = ttk.Combobox(frame_options, textvariable=subject_var,
+                             values=subject_config.get_subjects_for_level("高中"),
+                             state="readonly", width=6)
+subject_combo.pack(side=tk.LEFT)
 ttk.Button(frame_options, text="🚀 开始转换", command=start_conversion).pack(side=tk.RIGHT, padx=4)
 
 # 文件列表标题
