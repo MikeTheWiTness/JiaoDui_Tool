@@ -439,7 +439,7 @@ class MultiSubjectProofreadApp:
                     full_item = os.path.join(paper_path, item)
                     if not os.path.isdir(full_item):
                         continue
-                    if "题" in item:
+                    if "题" in item or item.startswith("板块"):
                         question_dirs.append(full_item)
                     elif item == "知识":
                         knowledge_dir = full_item

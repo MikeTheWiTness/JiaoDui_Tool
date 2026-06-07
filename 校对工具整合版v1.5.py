@@ -764,7 +764,9 @@ def collect_paper_dirs(base_path):
     # 如果路径直接包含 第1题 子目录，则它本身就是一套试卷
     sub_items = [x for x in base.iterdir() if x.is_dir()]
     sub_names = [x.name for x in sub_items]
-    has_question_dir = any('题' in n for n in sub_names)
+    def _is_unit_dir(name):
+        return '题' in name or name.startswith('板块')
+    has_question_dir = any(_is_unit_dir(n) for n in sub_names)
     has_knowledge = any(n == '知识' for n in sub_names)
     if has_question_dir or has_knowledge:
         result.append(str(base))
@@ -772,7 +774,7 @@ def collect_paper_dirs(base_path):
         # 扫描下一级
         for d in sub_items:
             inner = [x.name for x in d.iterdir() if x.is_dir()]
-            if any('题' in n for n in inner) or '知识' in inner:
+            if any(_is_unit_dir(n) for n in inner) or '知识' in inner:
                 result.append(str(d))
     return result
 
@@ -1120,7 +1122,7 @@ class IntegratedApp:
         if not path: return
         dirs = collect_paper_dirs(path)
         if not dirs:
-            messagebox.showwarning("提示", "所选目录下没有识别到试卷结构（需包含第N题 或 知识 子目录）")
+            messagebox.showwarning("提示", "所选目录下没有识别到试卷结构（需包含第N题/板块N 或 知识 子目录）")
             return
         added = 0
         for d in dirs:
@@ -1296,7 +1298,7 @@ class IntegratedApp:
                 for item in os.listdir(paper_path):
                     full = os.path.join(paper_path, item)
                     if not os.path.isdir(full): continue
-                    if "题" in item:
+                    if "题" in item or item.startswith("板块"):
                         question_dirs.append(full)
                     elif item == "知识":
                         knowledge_dir = full
