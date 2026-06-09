@@ -25,6 +25,15 @@ _DANGEROUS_PATTERNS = [
     r"\btempfile\b",
     r"\bpty\b",
     r"\bsignal\b",
+    # 绕过手法检测
+    r"__builtins__\s*\[",
+    r"__builtins__\s*\.\s*get",
+    r"\.__class__\s*\.\s*__bases__",
+    r"\.__class__\s*\.\s*__mro__",
+    r"\.__subclasses__\s*\(",
+    r"getattr\s*\(\s*__builtins__",
+    r"chr\s*\(\s*1[0-9][0-9]\s*\)",  # chr(101) = 'e', chr(118) = 'v' 等编码绕过
+    r"\bchr\s*\(\s*9[5-9]\s*\)",    # chr(95) = '_', chr(97) = 'a' 编码绕过
 ]
 
 

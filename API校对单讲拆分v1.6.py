@@ -119,7 +119,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 class MultiSubjectProofreadApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("多学科题目批量校对工具 v1.5")
+        self.root.title("多学科题目批量校对工具 v1.6")
         self.root.geometry("1250x780")
 
         self.task_running = False

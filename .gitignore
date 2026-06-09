@@ -7,7 +7,6 @@ build/
 dist/
 __pycache__/
 *.pyc
-*.spec
 
 # 虚拟环境
 venv/

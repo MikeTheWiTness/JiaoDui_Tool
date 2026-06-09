@@ -8,8 +8,6 @@
   - 提示词（question_prompt_lines / knowledge_prompt_lines）
   - 讲义拆分规则（lecture_split）
   - 试卷拆分规则（exam_split）
-
-回退顺序：subjects/{学段}/{学科}/config.json → prompts/{学科}.json / title_patterns.json → 内置默认值。
 """
 
 import os, re, json, sys
@@ -27,10 +25,6 @@ def _app_path(rel):
 
 # ========================= 路径常量 =========================
 SUBJECTS_DIR = _app_path("subjects")
-PROMPTS_DIR = _app_path("prompts")
-TITLE_PATTERNS_FILE = _app_path("title_patterns.json")
-LEGACY_QUESTION_PROMPT_FILE = _app_path("API_Proofreading_Prompt.json")
-LEGACY_KNOWLEDGE_PROMPT_FILE = _app_path("API_Knowledge_Prompt.json")
 
 # ========================= 学段与学科映射 =========================
 LEVELS = ["小学", "初中", "高中"]
@@ -51,104 +45,62 @@ def get_subjects_for_level(level):
     return LEVEL_SUBJECTS.get(level, LEVEL_SUBJECTS[DEFAULT_LEVEL])
 
 
-# ========================= 内置默认值 =========================
-_DEFAULT_WRAPPED_PATTERNS = [
-    "例\\d+", "练\\d+", "教师版",
-    "一本班", "一本班\\d+", "一本班例题", "一本班备用",
-    "双一流班", "双一流班\\d+", "双一流班例题", "双一流班备用",
-    "清北班", "清北班\\d+", "清北班例题", "清北班备用",
-    "A班", "A班\\d+", "A\\+班", "A\\+班\\d+",
-    "S班", "S班\\d+",
-    "变式\\d+_例\\d+", "变式\\d+",
-]
-
-
-def _load_json(filepath):
-    """读取JSON文件，失败返回None"""
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _load_prompt_lines(filepath, key):
-    """从JSON文件读取指定key的list，拼接为字符串"""
-    data = _load_json(filepath)
-    if data and key in data and isinstance(data[key], list):
-        return "\n".join(data[key])
-    return None
-
-
 # ========================= 主加载函数 =========================
+
+_config_cache = {}
+
+
+def clear_config_cache():
+    """清空配置缓存（用于测试或强制重载）"""
+    _config_cache.clear()
+
 
 def load_subject_config(subject, level=None):
     """
     加载指定学段+学科的完整配置。
-    返回 dict，包含所有字段；缺失字段用回退值填充。
+    返回 dict，包含所有字段。
+    若配置文件不存在或缺少必需字段则直接报错。
+    结果会被缓存，避免重复读取 JSON 文件。
     """
     if level is None:
         level = DEFAULT_LEVEL
 
-    config = {}
+    cache_key = (subject, level)
+    cached = _config_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    # 1. 尝试加载新格式: subjects/{level}/{subject}/config.json
+    # 加载 config.json
     subject_file = os.path.join(SUBJECTS_DIR, level, subject, "config.json")
-    new_data = _load_json(subject_file)
+    if not os.path.exists(subject_file):
+        raise FileNotFoundError(f"学科配置文件不存在: {subject_file}")
 
-    # 2. 提示词：新格式 → 旧 prompts/*.json（仅高中回退）→ 旧单文件回退
-    if new_data and "question_prompt_lines" in new_data:
-        config["question_prompt_lines"] = new_data["question_prompt_lines"]
-    elif level == DEFAULT_LEVEL:
-        old_prompt_file = os.path.join(PROMPTS_DIR, f"{subject}.json")
-        lines = _load_prompt_lines(old_prompt_file, "question_prompt_lines")
-        if lines is None:
-            lines = _load_prompt_lines(LEGACY_QUESTION_PROMPT_FILE, "system_prompt_lines")
-        config["question_prompt_lines"] = lines if lines else ""
-    else:
-        config["question_prompt_lines"] = ""
+    with open(subject_file, 'r', encoding='utf-8') as f:
+        new_data = json.load(f)
 
-    if new_data and "knowledge_prompt_lines" in new_data:
-        config["knowledge_prompt_lines"] = new_data["knowledge_prompt_lines"]
-    elif level == DEFAULT_LEVEL:
-        old_prompt_file = os.path.join(PROMPTS_DIR, f"{subject}.json")
-        lines = _load_prompt_lines(old_prompt_file, "knowledge_prompt_lines")
-        if lines is None:
-            lines = _load_prompt_lines(LEGACY_KNOWLEDGE_PROMPT_FILE, "system_prompt_lines")
-        config["knowledge_prompt_lines"] = lines if lines else ""
-    else:
-        config["knowledge_prompt_lines"] = ""
+    # 提示词 — 必需字段，缺失直接报错
+    if "question_prompt_lines" not in new_data:
+        raise ValueError(f"配置文件缺少 question_prompt_lines: {subject_file}")
+    if "knowledge_prompt_lines" not in new_data:
+        raise ValueError(f"配置文件缺少 knowledge_prompt_lines: {subject_file}")
 
-    # 3. lecture_split
-    lecture = {}
-    if new_data and "lecture_split" in new_data:
-        lecture = new_data["lecture_split"]
+    config = {}
+    config["question_prompt_lines"] = new_data["question_prompt_lines"]
+    config["knowledge_prompt_lines"] = new_data["knowledge_prompt_lines"]
 
+    # lecture_split — 可选，缺失用空默认
+    lecture = new_data.get("lecture_split", {})
     config["lecture_split_mode"] = lecture.get("split_mode", "title")
     config["lecture_section_pattern"] = lecture.get("section_pattern", r"^##\s")
     config["lecture_wrapped_patterns"] = lecture.get("wrapped_patterns", [])
     config["lecture_unwrapped_patterns"] = lecture.get("unwrapped_patterns", [])
     config["lecture_section_boundary"] = lecture.get("section_boundary", True)
 
-    # 如果新配置中没有 lecture_split，回退
-    if not lecture and not config["lecture_wrapped_patterns"]:
-        # 仅高中回退到 title_patterns.json
-        if level == DEFAULT_LEVEL:
-            tp_data = _load_json(TITLE_PATTERNS_FILE)
-            if tp_data and "patterns" in tp_data:
-                config["lecture_wrapped_patterns"] = tp_data["patterns"]
-            else:
-                config["lecture_wrapped_patterns"] = list(_DEFAULT_WRAPPED_PATTERNS)
-        else:
-            config["lecture_wrapped_patterns"] = list(_DEFAULT_WRAPPED_PATTERNS)
-
-    # 4. exam_split
-    exam = {}
-    if new_data and "exam_split" in new_data:
-        exam = new_data["exam_split"]
-
+    # exam_split — 可选，缺失用默认
+    exam = new_data.get("exam_split", {})
     config["exam_question_pattern"] = exam.get("question_pattern", r"^(\d+)．")
 
+    _config_cache[cache_key] = config
     return config
 
 
@@ -185,13 +137,13 @@ def get_lecture_patterns(subject, level=None):
             full_pat = r'^\*\*' + pat + r'\*\*.*$'
             wrapped.append(re.compile(full_pat))
         except re.error:
-            pass
+            print(f"[subject_config] 无效正则（{subject}/{level or '默认'} wrapped）: {pat!r}")
     unwrapped = []
     for pat in cfg["lecture_unwrapped_patterns"]:
         try:
             unwrapped.append(re.compile(pat))
         except re.error:
-            pass
+            print(f"[subject_config] 无效正则（{subject}/{level or '默认'} unwrapped）: {pat!r}")
     return wrapped, unwrapped
 
 

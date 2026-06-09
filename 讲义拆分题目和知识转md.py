@@ -198,59 +198,9 @@ def clean_md_file(md_file):
         return False
 
 # ==================== 题目分割功能 ====================
-def load_title_patterns(config_path=None, subject=None, level=None):
-    """
-    加载题目标题的正则模式。
-    如果指定学科，从 subject_config 加载；否则尝试加载 title_patterns.json。
-    如果文件不存在或读取失败，则使用内置默认模式。
-    """
-    if subject:
-        cfg = subject_config.load_subject_config(subject, level)
-        return cfg.get("lecture_wrapped_patterns", [])
-    default_patterns = [
-        r'例\d+',
-        r'练\d+',
-        r'清北班',
-        r'清北班例题',
-        r'清北班备用',
-        r'教师版',
-        r'一本班',
-        r'一本班\d+',
-        r'双一流班',
-        r'双一流班\d+',
-        r'A班',
-        r'A班\d+',
-        r'A\+班',
-        r'S班',
-    ]
-    if config_path is None:
-        local_config = Path(__file__).parent / "title_patterns.json"
-        if local_config.exists():
-            config_path = str(local_config)
-    if config_path and os.path.exists(config_path):
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            patterns = config.get('patterns', default_patterns)
-            patterns = [str(p) for p in patterns]
-            log_print(f"已加载题目标题配置：{config_path}，共 {len(patterns)} 个模式")
-            return patterns
-        except Exception as e:
-            log_print(f"读取配置文件失败：{e}，使用默认模式")
-    else:
-        log_print("未找到 title_patterns.json，使用内置默认模式")
-    return default_patterns
-
-def compile_title_patterns(patterns):
-    """
-    将字符串模式编译为正则对象，允许标题后面有其他内容。
-    注意：不要对模式进行 re.escape，因为模式中可能包含正则特殊字符（如 \\d、+）。
-    """
-    compiled = []
-    for pat in patterns:
-        full_pat = r'^\*\*' + pat + r'\*\*.*$'
-        compiled.append(re.compile(full_pat))
-    return compiled
+def compile_title_patterns(subject, level=None):
+    """编译指定学科+学段的标题正则（委托 subject_config）"""
+    return subject_config.get_compiled_title_patterns(subject, level)
 
 def generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_img_dir, subject=None, level=None):
     """
@@ -263,12 +213,7 @@ def generate_knowledge_with_images(cleaned_md, knowledge_dir, basename, src_img_
         content = f.read()
     lines = content.splitlines()
 
-    if subject:
-        title_compiled = subject_config.get_compiled_title_patterns(subject, level)
-    else:
-        patterns = load_title_patterns()
-        title_compiled = compile_title_patterns(patterns)
-
+    title_compiled = compile_title_patterns(subject, level)
     filtered_lines = []
     in_question = False
     for line in lines:
@@ -374,11 +319,7 @@ def split_md_into_questions(md_file, output_root, base_name, subject=None, level
             questions.append((current_title, '\n'.join(current_content)))
     else:
         # ---- Title 模式：按粗体题目标记拆分（原有逻辑） ----
-        if subject:
-            title_compiled = subject_config.get_compiled_title_patterns(subject, level)
-        else:
-            patterns = load_title_patterns()
-            title_compiled = compile_title_patterns(patterns)
+        title_compiled = compile_title_patterns(subject, level)
         current_title = None
         current_content = []
         in_question = False
@@ -415,7 +356,7 @@ def split_md_into_questions(md_file, output_root, base_name, subject=None, level
 
     log_print(f"   🔍 图片源目录（硬编码）: {src_images_dir}")
     if not src_images_dir.exists():
-        log_print(f"   ❌ 错误：图片源目录不存在！请检查路径是否正确。")
+        log_print(f"   ⚠️ 图片源目录不存在，将跳过图片复制。")
         log_print(f"      期望的路径是: {src_images_dir}")
         # 尝试列出 md_dir 下的内容供调试
         try:
@@ -423,7 +364,7 @@ def split_md_into_questions(md_file, output_root, base_name, subject=None, level
             log_print(f"      {md_dir} 目录下的内容: {[item.name for item in items]}")
         except:
             pass
-        return False
+        src_images_dir = None  # 标记为无图片目录，后续跳过图片处理
     else:
         # 列出该目录下的图片文件，确认有图片
         img_files = list(src_images_dir.glob("*.*"))

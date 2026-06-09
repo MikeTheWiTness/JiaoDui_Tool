@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-多学科题目处理工具 v1.5 —— 整合版
+多学科题目处理工具 v1.6 —— 整合版
   模式：试卷模式 / 讲义模式
   流程：完整流程 / 仅拆分 / 仅校对
   学科：语数外理化生政史地（各学科独立提示词）
@@ -103,10 +103,6 @@ def _get_tool_instructions(subject):
 # ========================= 全局配置 =========================
 DEFAULT_OUTPUT = "output"
 ENV_FILE = _app_path(".env")
-PROMPT_FILE = _app_path("API_Proofreading_Prompt.json")
-KNOWLEDGE_PROMPT_FILE = _app_path("API_Knowledge_Prompt.json")
-TITLE_PATTERNS_FILE = _app_path("title_patterns.json")
-PROMPTS_DIR = _app_path("prompts")
 
 def load_env_config():
     """从 .env 文件读取 API 配置"""
@@ -147,31 +143,9 @@ def log(msg):
 
 # ==================== 工具一：讲义管线 ====================
 
-def load_title_patterns(subject=None, level=None):
-    """加载标题模式。如果指定学科，从 subject_config 加载；否则回退旧 title_patterns.json"""
-    if subject:
-        cfg = subject_config.load_subject_config(subject, level)
-        return cfg.get("lecture_wrapped_patterns", [])
-    default_patterns = [
-        r'例\d+', r'练\d+', r'清北班', r'清北班例题', r'清北班备用',
-        r'教师版', r'一本班', r'一本班\d+', r'双一流班', r'双一流班\d+',
-        r'A班', r'A班\d+', r'A\+班', r'S班',
-        r'变式\d+_例\d+', r'变式\d+',
-    ]
-    if os.path.exists(TITLE_PATTERNS_FILE):
-        try:
-            with open(TITLE_PATTERNS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return [str(p) for p in data.get('patterns', default_patterns)]
-        except Exception:
-            pass
-    return default_patterns
-
-def compile_title_patterns(patterns):
-    compiled = []
-    for pat in patterns:
-        compiled.append(re.compile(r'^\*\*' + pat + r'\*\*.*$'))
-    return compiled
+def compile_title_patterns(subject, level=None):
+    """编译指定学科+学段的标题正则（委托 subject_config）"""
+    return subject_config.get_compiled_title_patterns(subject, level)
 
 def fix_latex_escapes(md_file):
     with open(md_file, 'r', encoding='utf-8') as f:
@@ -222,11 +196,16 @@ def comprehensive_clean(md_content):
     return text.strip()
 
 def clean_md_file(md_file):
-    with open(md_file, 'r', encoding='utf-8') as f:
-        content = f.read()
-    cleaned = comprehensive_clean(content)
-    with open(md_file, 'w', encoding='utf-8') as f:
-        f.write(cleaned)
+    try:
+        with open(md_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        cleaned = comprehensive_clean(content)
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write(cleaned)
+        return True
+    except Exception as e:
+        log(f"   清洗失败: {e}")
+        return False
 
 def split_by_title_patterns(md_file, output_root, base_name, do_clean, subject=None, level=None):
     """讲义模式：按标题模式拆分题目"""
@@ -261,11 +240,7 @@ def split_by_title_patterns(md_file, output_root, base_name, do_clean, subject=N
             questions.append((current_title, '\n'.join(current_content)))
     else:
         # ---- Title 模式：按粗体题目标记拆分（原有逻辑） ----
-        if subject:
-            title_compiled = subject_config.get_compiled_title_patterns(subject, level)
-        else:
-            patterns = load_title_patterns()
-            title_compiled = compile_title_patterns(patterns)
+        title_compiled = compile_title_patterns(subject, level)
         current_title = None
         current_content = []
         in_question = False
@@ -340,11 +315,7 @@ def generate_knowledge_with_images(cleaned_md, output_root, base_name, subject=N
     with open(cleaned_md, 'r', encoding='utf-8') as f:
         content = f.read()
     lines = content.splitlines()
-    if subject:
-        compiled = subject_config.get_compiled_title_patterns(subject, level)
-    else:
-        patterns = load_title_patterns()
-        compiled = compile_title_patterns(patterns)
+    compiled = compile_title_patterns(subject, level)
     filtered = []
     in_question = False
     for line in lines:
@@ -660,21 +631,6 @@ def load_subject_knowledge_prompt(subject, level=None):
     """加载指定学科+学段的知识校对提示词（委托 subject_config）"""
     return subject_config.get_knowledge_prompt(subject, level)
 
-def _load_legacy_prompt(filepath):
-    """兼容旧版提示词文件格式"""
-    if not os.path.exists(filepath):
-        return ""
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if "system_prompt_lines" in data and isinstance(data["system_prompt_lines"], list):
-            return "\n".join(data["system_prompt_lines"])
-        if "system_prompt" in data:
-            return data["system_prompt"]
-    except Exception:
-        pass
-    return ""
-
 def get_full_question_prompt(subject, level=None):
     """获取指定学科+学段的完整题目校对提示词（含工具说明）"""
     base = load_subject_question_prompt(subject, level)
@@ -784,7 +740,7 @@ def collect_paper_dirs(base_path):
 class IntegratedApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("多学科题目处理工具 v1.5（整合版）")
+        self.root.title("多学科题目处理工具 v1.6（整合版）")
         self.root.geometry("1050x750")
         self.root.minsize(900, 650)
 
@@ -1048,11 +1004,17 @@ class IntegratedApp:
             # 重名处理
             counter = 1
             while os.path.exists(extract_dir):
-                counter += 1
                 extract_dir = os.path.join(extract_root, f"{zip_basename}_{counter}")
+                counter += 1
             os.makedirs(extract_dir, exist_ok=True)
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(extract_dir)
+                for member in zf.infolist():
+                    # 防止路径穿越攻击
+                    member_path = os.path.normpath(member.filename)
+                    if member_path.startswith('..') or os.path.isabs(member_path):
+                        log(f"   ⚠️ 跳过可疑条目: {member.filename}")
+                        continue
+                    zf.extract(member, extract_dir)
             found = 0
             for rt, _, files in os.walk(extract_dir):
                 for name in files:
@@ -1181,8 +1143,8 @@ class IntegratedApp:
             target_base = basename
             counter = 1
             while os.path.exists(os.path.join(split_root, target_base)):
-                counter += 1
                 target_base = f"{basename}_{counter}"
+                counter += 1
             if target_base != basename:
                 log(f"   ⚠️ 目录重名：{basename} → {target_base}")
                 basename = target_base
@@ -1203,8 +1165,10 @@ class IntegratedApp:
             if source == "讲义":
                 fix_latex_escapes(raw_md)
                 if self.clean_enabled.get():
-                    clean_md_file(raw_md)
-                    log("   ✅ 表格清理完成")
+                    if clean_md_file(raw_md):
+                        log("   ✅ 表格清理完成")
+                    else:
+                        log("   ⚠️ 表格清理失败")
             else:
                 post_process_md_zw(raw_md)
 

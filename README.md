@@ -44,10 +44,10 @@ K-12 全学科题目处理流水线 —— Word 转 Markdown → 智能拆分 �
 pip install sympy requests
 
 # 运行整合版（推荐，含转换 + 拆分 + 校对）
-python 校对工具整合版v1.5.py
+python 校对工具整合版v1.6.py
 
 # 或运行独立校对工具（仅校对，适合已有拆分结果的目录）
-python API校对单讲拆分1.5.py
+python API校对单讲拆分v1.6.py
 ```
 
 1. 点击 **⚙️ API 配置** 填写接口地址、密钥和模型名（自动保存到 `.env`）
@@ -57,28 +57,21 @@ python API校对单讲拆分1.5.py
 
 ## 版本历史
 
-### v1.6 — 学段分级 + 版块拆分模式
+### v1.6 — 学段分级 + 版块拆分模式 + 多学科支持
 
 - 重构配置目录：`subjects/{小学/初中/高中}/{学科}/config.json`，共 24 个配置文件
-- 新增 `subject_config.py` 统一配置加载模块（回退兼容旧 `prompts/` 和 `title_patterns.json`）
+- 新增 `subject_config.py` 统一配置加载模块，配置缺失时直接报错
 - GUI 改为双下拉菜单：学段选择 + 学科选择，学科列表随学段动态更新
 - 新增 **section 拆分模式**（英语讲义）：
   - 按 `##` 章节标题拆分为完整教学版块（`板块N/` 目录）
   - 自动跳过知识提取（版块本身即完整教学单元）
   - 提示词适配版块校对（输出"版块基础信息"而非"题目基础信息"）
 - 初中政治 → 道法；新增小学/初中科学和道法
-- `API校对单讲拆分1.5.py` 改为读取 `.env`（与整合版统一）
+- 新增 9 学科独立 AI 提示词 + 符号计算工具集成（`sympy_tools/`，含方程式配平、化学计量）
+- 新增标题拆分模式：`变式N_例M`、`变式N`
+- `API校对单讲拆分v1.6.py` 改为读取 `.env`（与整合版统一）
 - 修复切换学段时学科列表未联动、转换全部失败时按钮卡住等问题
 - `reasoning_effort: "high"` 思考模式已启用
-
-### v1.5 — 多学科支持 + 符号计算工具集成
-
-- 新增 9 学科独立 AI 提示词（`prompts/` 目录）
-- GUI 新增学科选择下拉菜单，切换时自动重载提示词和工具
-- 将 `sympy_tools` 符号计算工具接入 API 调用链
-- 新增化学符号计算工具：方程式配平、化学计量计算
-- 新增标题拆分模式：`变式N_例M`、`变式N`
-- `API校对单讲拆分1.5.py` 同步升级为多学科工具
 
 ### v1.4 — 符号计算工具包
 
@@ -89,14 +82,14 @@ python API校对单讲拆分1.5.py
 
 - 三工具合一（讲义拆分 + 试卷拆分 + API 校对）
 - Pandoc 转换管线，LaTeX 数学公式保留
-- `title_patterns.json` 可配置标题匹配规则
+- 学科配置支持自定义拆分规则
 
 ## 目录结构
 
 ```
-校对v1.5/
-├── 校对工具整合版v1.5.py       # 主程序（转换 + 拆分 + 校对，GUI）
-├── API校对单讲拆分1.5.py        # 独立校对工具（仅校对，GUI）
+校对v1.6/
+├── 校对工具整合版v1.6.py       # 主程序（转换 + 拆分 + 校对，GUI）
+├── API校对单讲拆分v1.6.py        # 独立校对工具（仅校对，GUI）
 ├── 讲义拆分题目和知识转md.py    # 讲义拆分（独立运行，GUI）
 ├── 组卷网试卷转md.py            # 试卷拆分（独立运行，GUI）
 ├── subject_config.py           # 统一配置加载模块（v1.6）
@@ -107,11 +100,7 @@ python API校对单讲拆分1.5.py
 │       └── {学科}/config.json  # 提示词 + 拆分规则
 ├── sympy_tools/                # 符号计算工具包
 │   ├── tools.py, templates.py, sandbox.py, safety.py
-├── prompts/                    # 旧版学科提示词（高中回退用）
 ├── tests/test_sympy_tools.py
-├── API_Proofreading_Prompt.json   # 旧版物理提示词（回退用）
-├── API_Knowledge_Prompt.json      # 旧版物理知识提示词（回退用）
-├── title_patterns.json            # 旧版标题匹配规则（回退用）
 ├── .env                           # API 配置
 ├── CLAUDE.md
 └── output/
@@ -154,7 +143,7 @@ MODEL_NAME=doubao-seed-2-0-pro-260215
 ```
 
 - `split_mode: "section"` + `section_pattern: "^##\\s"` 启用英语版块拆分
-- 缺失字段自动回退到旧 `prompts/{学科}.json` / `title_patterns.json`
+- 配置缺失时直接报错，确保所有学段+学科配置完整
 
 ## 数据流
 

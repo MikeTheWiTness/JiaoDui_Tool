@@ -23,8 +23,16 @@ def execute_code(code: str, timeout: int = 30) -> dict:
     try:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        # 子进程中使用受限 builtins，防止 sympify 的 eval 后门被利用
+        restricted_code = (
+            "import builtins, sys\n"
+            "_allowed = {k:v for k,v in builtins.__dict__.items() "
+            "if k not in ('exec','eval','compile','open','input','breakpoint','memoryview')}\n"
+            "_allowed['__build_class__'] = __build_class__\n"
+            "exec(sys.stdin.read(), {'__builtins__': _allowed, '__name__': '__main__'})\n"
+        )
         proc = subprocess.run(
-            [sys.executable, "-c", "import sys; exec(sys.stdin.read())"],
+            [sys.executable, "-c", restricted_code],
             input=code, env=env,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
