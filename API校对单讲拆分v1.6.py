@@ -3,9 +3,15 @@ import json
 import base64
 import time
 import threading
+import re
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 import requests
+try:
+    from pydantic import BaseModel, Field
+    _PYDANTIC_OK = True
+except ImportError:
+    _PYDANTIC_OK = False
 import subject_config
 
 def _app_dir():
@@ -17,19 +23,24 @@ def _app_path(rel):
     return os.path.join(_app_dir(), rel)
 
 ENV_FILE = _app_path(".env")
-PROMPTS_DIR = _app_path("prompts")
 
 # ========================= 符号计算工具集成 =========================
 try:
     from sympy_tools.tools import (
         EvaluateExpressionTool, SolveEquationTool, CheckEqualityTool,
         SimplifyExpressionTool, SolvePhysicsFormulaTool, DimensionalAnalysisTool,
-        ComputeLimitTool, VectorOperationsTool, MagneticDeflectionTool,
-        BalanceChemicalEquationTool, StoichiometryCalcTool,
+        ComputeLimitTool, VectorOperationsTool, CircleFromTwoPointsTool,
+        GeometryTool, BalanceChemicalEquationTool, StoichiometryCalcTool,
     )
     _TOOLS_AVAILABLE = True
 except ImportError:
     _TOOLS_AVAILABLE = False
+
+try:
+    from web_tools import WebFetchTool, WebSearchTool
+    _WEB_TOOLS_OK = True
+except ImportError:
+    _WEB_TOOLS_OK = False
 
 def _build_tool_map():
     if not _TOOLS_AVAILABLE:
@@ -38,10 +49,11 @@ def _build_tool_map():
         "数学": [
             EvaluateExpressionTool(), SolveEquationTool(), CheckEqualityTool(),
             SimplifyExpressionTool(), ComputeLimitTool(),
+            GeometryTool(), VectorOperationsTool(), CircleFromTwoPointsTool(),
         ],
         "物理": [
             EvaluateExpressionTool(), SolveEquationTool(), SolvePhysicsFormulaTool(),
-            DimensionalAnalysisTool(), VectorOperationsTool(), MagneticDeflectionTool(),
+            DimensionalAnalysisTool(), VectorOperationsTool(), CircleFromTwoPointsTool(),
         ],
         "化学": [
             EvaluateExpressionTool(), SolveEquationTool(),
@@ -53,6 +65,15 @@ def _build_tool_map():
     }
 
 SUBJECT_TOOLS = _build_tool_map()
+
+# 注册联网工具
+if _WEB_TOOLS_OK:
+    _wf = WebFetchTool()
+    _ws = WebSearchTool()
+    SUBJECT_TOOLS.setdefault("语文", []).extend([_wf, _ws])
+    for _subj in ["数学", "物理", "化学", "生物"]:
+        SUBJECT_TOOLS.setdefault(_subj, []).append(_ws)
+
 
 def _tool_to_openai(tool):
     schema = tool.args_schema.model_json_schema()
@@ -81,14 +102,42 @@ def _execute_tool(tool_instances, tool_name, arguments):
 def _get_tool_instructions(subject):
     if subject not in SUBJECT_TOOLS or not SUBJECT_TOOLS[subject]:
         return ""
-    tool_list = [f"- `{t.name}`: {t.description}" for t in SUBJECT_TOOLS[subject]]
-    return (
-        "\n## 可用的符号计算工具\n"
-        "你在校对该学科题目时，可以使用以下工具进行**实算验证**，不得凭模型自身估算数值结果：\n"
-        + "\n".join(tool_list) + "\n"
-        "使用规则：对于需要数值计算、方程求解、公式推导验证的步骤，必须调用对应工具获取精确结果。"
-        "仅文字类问题（错别字、语病等）不需要调用工具。\n"
-    )
+    tools = SUBJECT_TOOLS[subject]
+    sympy_tools = [t for t in tools if t.name != "web_search" and t.name != "web_fetch"]
+    web_tools = [t for t in tools if t.name == "web_search" or t.name == "web_fetch"]
+
+    lines = []
+
+    # 语文学科 — 原文检索
+    if subject == "语文":
+        lines.append("\n## 可用的网页检索工具\n"
+            "你在校对语文学科题目时，必须使用以下工具进行**原文联网检索和比对**，不得凭模型自身记忆判断原文准确性：\n")
+        lines.append("\n".join(f"- `{t.name}`: {t.description}" for t in web_tools))
+        lines.append("\n使用规则：\n"
+            "1. 遇到文言文/诗歌原文，必须调用 web_fetch 联网检索原文并逐字比对\n"
+            "2. 先调 web_search 搜索'原文句子 site:sou-yun.cn'定位收录站点，再调 web_fetch 抓详情\n"
+            "3. 搜索时必须直接用题目中原文的连续2-3句（至少15字）作为检索词，不要搜篇名标题\n"
+            "4. 搜韵网 URL 格式：https://sou-yun.cn/QueryPoem.aspx?q=诗句\n"
+            "5. 识典古籍搜索 URL 格式：https://www.shidianguji.com/search/原文句子?page_from=home_page\n"
+            "6. 如果两次搜索均返回空或失败，标注'无法联网检索'并使用模型自身知识继续校对\n"
+            "7. 仅文字类问题（错别字、语病等）不需要调用工具\n")
+        return "".join(lines)
+
+    # 其他学科 — 符号计算 + 联网搜索
+    if sympy_tools:
+        lines.append("\n## 可用的符号计算工具\n"
+            "你在校对该学科题目时，可以使用以下工具进行**实算验证**，不得凭模型自身估算数值结果：\n")
+        lines.append("\n".join(f"- `{t.name}`: {t.description}" for t in sympy_tools))
+        lines.append("\n使用规则：对于需要数值计算、方程求解、公式推导验证的步骤，必须调用对应工具获取精确结果。\n")
+
+    if web_tools:
+        lines.append("\n## 可用的联网搜索工具\n"
+            "如需查找最新说法、验证专业术语、检索不在训练数据内的信息，可使用：\n")
+        lines.append("\n".join(f"- `{t.name}`: {t.description}" for t in web_tools))
+        lines.append("\n使用规则：先调 web_search 搜索，若需查看详情页再调 web_fetch 抓取。"
+            "搜索失败或超时是正常情况，此时使用模型自身知识继续。\n")
+
+    return "".join(lines)
 
 # ========================= 提示词加载 =========================
 
@@ -384,11 +433,12 @@ class MultiSubjectProofreadApp:
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]
 
-                # 处理 tool calls 循环
+                # 处理 tool calls 循环（理科最多5轮，语文最多10轮——网页搜索可能需要多次尝试）
+                max_loops = 10 if self.current_subject.get() == "语文" else 5
                 loop = 0
                 while choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
-                    if loop >= 5:
-                        return "**工具调用超限：** 模型进行了超过5轮工具调用，已中止。"
+                    if loop >= max_loops:
+                        return f"**工具调用超限：** 模型进行了超过{max_loops}轮工具调用，已中止。"
                     messages.append(choice["message"])
                     for tc in choice["message"]["tool_calls"]:
                         tool_name = tc["function"]["name"]
@@ -495,7 +545,8 @@ class MultiSubjectProofreadApp:
                     paper_results[q_dir] = res
 
                     if "API调用失败" in res:
-                        self.log(f"❌ {q_name} {task_type}校对超时/失败")
+                        err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
+                        self.log(f"❌ {q_name} {task_type}校对失败：{err_detail}")
                     else:
                         self.log(f"✅ {q_name} {task_type}校对完成")
 

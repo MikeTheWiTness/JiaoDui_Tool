@@ -13,6 +13,11 @@ import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import requests
+try:
+    from pydantic import BaseModel, Field
+    _PYDANTIC_OK = True
+except ImportError:
+    _PYDANTIC_OK = False
 import subject_config
 
 # ========================= 路径工具 =========================
@@ -30,12 +35,18 @@ try:
     from sympy_tools.tools import (
         EvaluateExpressionTool, SolveEquationTool, CheckEqualityTool,
         SimplifyExpressionTool, SolvePhysicsFormulaTool, DimensionalAnalysisTool,
-        ComputeLimitTool, VectorOperationsTool, MagneticDeflectionTool,
-        BalanceChemicalEquationTool, StoichiometryCalcTool,
+        ComputeLimitTool, VectorOperationsTool, CircleFromTwoPointsTool,
+        GeometryTool, BalanceChemicalEquationTool, StoichiometryCalcTool,
     )
     _TOOLS_AVAILABLE = True
 except ImportError:
     _TOOLS_AVAILABLE = False
+
+try:
+    from web_tools import WebFetchTool, WebSearchTool
+    _WEB_TOOLS_OK = True
+except ImportError:
+    _WEB_TOOLS_OK = False
 
 # 学科 → 工具实例映射
 def _build_tool_map():
@@ -45,10 +56,11 @@ def _build_tool_map():
         "数学": [
             EvaluateExpressionTool(), SolveEquationTool(), CheckEqualityTool(),
             SimplifyExpressionTool(), ComputeLimitTool(),
+            GeometryTool(), VectorOperationsTool(), CircleFromTwoPointsTool(),
         ],
         "物理": [
             EvaluateExpressionTool(), SolveEquationTool(), SolvePhysicsFormulaTool(),
-            DimensionalAnalysisTool(), VectorOperationsTool(), MagneticDeflectionTool(),
+            DimensionalAnalysisTool(), VectorOperationsTool(), CircleFromTwoPointsTool(),
         ],
         "化学": [
             EvaluateExpressionTool(), SolveEquationTool(),
@@ -60,6 +72,15 @@ def _build_tool_map():
     }
 
 SUBJECT_TOOLS = _build_tool_map()
+
+# 注册联网工具
+if _WEB_TOOLS_OK:
+    _wf = WebFetchTool()
+    _ws = WebSearchTool()
+    SUBJECT_TOOLS.setdefault("语文", []).extend([_wf, _ws])
+    for _subj in ["数学", "物理", "化学", "生物"]:
+        SUBJECT_TOOLS.setdefault(_subj, []).append(_ws)
+
 
 def _tool_to_openai(tool):
     """将 LangChain BaseTool 转为 OpenAI function-calling 格式"""
@@ -91,14 +112,40 @@ def _get_tool_instructions(subject):
     """生成提示词中的工具使用说明段落"""
     if subject not in SUBJECT_TOOLS or not SUBJECT_TOOLS[subject]:
         return ""
-    tool_list = [f"- `{t.name}`: {t.description}" for t in SUBJECT_TOOLS[subject]]
-    return (
-        "## 可用的符号计算工具\n"
-        "你在校对该学科题目时，可以使用以下工具进行**实算验证**，不得凭模型自身估算数值结果：\n"
-        + "\n".join(tool_list) + "\n"
-        "使用规则：对于需要数值计算、方程求解、公式推导验证的步骤，必须调用对应工具获取精确结果。"
-        "仅文字类问题（错别字、语病等）不需要调用工具。\n"
-    )
+    tools = SUBJECT_TOOLS[subject]
+    sympy_tools = [t for t in tools if t.name != "web_search" and t.name != "web_fetch"]
+    web_tools = [t for t in tools if t.name == "web_search" or t.name == "web_fetch"]
+
+    lines = []
+
+    if subject == "语文":
+        lines.append("## 可用的网页检索工具\n"
+            "你在校对语文学科题目时，必须使用以下工具进行**原文联网检索和比对**，不得凭模型自身记忆判断原文准确性：\n")
+        lines.append("\n".join(f"- `{t.name}`: {t.description}" for t in web_tools))
+        lines.append("\n使用规则：\n"
+            "1. 遇到文言文/诗歌原文，必须调用 web_fetch 联网检索原文并逐字比对\n"
+            "2. 先调 web_search 搜索'原文句子 site:sou-yun.cn'定位收录站点，再调 web_fetch 抓详情\n"
+            "3. 搜索时必须直接用题目中原文的连续2-3句（至少15字）作为检索词，不要搜篇名标题\n"
+            "4. 搜韵网 URL 格式：https://sou-yun.cn/QueryPoem.aspx?q=诗句\n"
+            "5. 识典古籍搜索 URL 格式：https://www.shidianguji.com/search/原文句子?page_from=home_page\n"
+            "6. 如果两次搜索均返回空或失败，标注'无法联网检索'并使用模型自身知识继续校对\n"
+            "7. 仅文字类问题（错别字、语病等）不需要调用工具\n")
+        return "".join(lines)
+
+    if sympy_tools:
+        lines.append("## 可用的符号计算工具\n"
+            "你在校对该学科题目时，可以使用以下工具进行**实算验证**，不得凭模型自身估算数值结果：\n")
+        lines.append("\n".join(f"- `{t.name}`: {t.description}" for t in sympy_tools))
+        lines.append("\n使用规则：对于需要数值计算、方程求解、公式推导验证的步骤，必须调用对应工具获取精确结果。\n")
+
+    if web_tools:
+        lines.append("## 可用的联网搜索工具\n"
+            "如需查找最新说法、验证专业术语、检索不在训练数据内的信息，可使用：\n")
+        lines.append("\n".join(f"- `{t.name}`: {t.description}" for t in web_tools))
+        lines.append("\n使用规则：先调 web_search 搜索，若需查看详情页再调 web_fetch 抓取。"
+            "搜索失败或超时是正常情况，此时使用模型自身知识继续。\n")
+
+    return "".join(lines)
 
 # ========================= 全局配置 =========================
 DEFAULT_OUTPUT = "output"
@@ -648,7 +695,7 @@ SYSTEM_PROMPT = get_full_question_prompt("物理", "高中")
 KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理", "高中")
 MAX_RETRY = 2; TIME_OUT = 480; QUESTION_INTERVAL = 1; MAX_FILE_SIZE = 10 * 1024 * 1024
 
-def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None):
+def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None, subject=None):
     """调用 LLM API，支持可选的符号计算工具调用"""
     err_msg = ""
     tool_instances = tools or []
@@ -678,11 +725,12 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, t
             resp.raise_for_status()
             choice = resp.json()["choices"][0]
 
-            # 处理 tool calls 循环（最多 5 轮）
+            # 处理 tool calls 循环（理科最多5轮，语文最多10轮——网页搜索可能需要多次尝试）
+            max_loops = 10 if subject == "语文" else 5
             loop = 0
             while choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
-                if loop >= 5:
-                    return "**工具调用超限：** 模型进行了超过5轮工具调用，已中止。"
+                if loop >= max_loops:
+                    return f"**工具调用超限：** 模型进行了超过{max_loops}轮工具调用，已中止。"
                 # 将 assistant 消息（含 tool_calls）加入历史
                 messages.append(choice["message"])
                 for tc in choice["message"]["tool_calls"]:
@@ -1317,12 +1365,13 @@ class IntegratedApp:
                     prompt = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
                     subject = self.current_subject.get()
                     subject_tools = SUBJECT_TOOLS.get(subject, [])
-                    res = call_api(api_url, api_key, model, md_content, images_b64, q_name, prompt, tools=subject_tools)
+                    res = call_api(api_url, api_key, model, md_content, images_b64, q_name, prompt, tools=subject_tools, subject=subject)
                     self.proofread_result[q_dir] = res
                     paper_results[q_dir] = res
 
                     if "API调用失败" in res:
-                        log(f"   ❌ {q_name} 校对失败")
+                        err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
+                        log(f"   ❌ {q_name} 校对失败：{err_detail}")
                     else:
                         log(f"   ✅ {q_name} 校对完成")
                     time.sleep(QUESTION_INTERVAL)

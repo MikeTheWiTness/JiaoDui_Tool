@@ -38,7 +38,7 @@ class EvaluateExpressionTool(BaseTool):
     description: str = (
         "求值一个符号数学表达式，可选代入变量后进行数值计算。"
         "支持四则运算、幂运算、三角函数（sin/cos/tan）、对数（log）和指数（exp）。"
-        "用于验证物理题答案的数值正确性——必须用此工具实算，不得凭模型自身估算。"
+        "适用于数学/物理/化学/生物题目中的数值验证——必须用此工具实算，不得凭模型自身估算。"
     )
     args_schema: type[BaseModel] = EvaluateParams
 
@@ -69,7 +69,7 @@ class SolveEquationTool(BaseTool):
     description: str = (
         "求解一个或多个方程。每个方程字符串可以是等号形式（如 'x**2 - 4 = 0'）"
         "或设为0的表达式（如 'x**2 - 4'）。返回解的列表（单方程）或字典列表（方程组）。"
-        "用于验证物理题中的方程推导是否正确——必须用此工具实算验证。"
+        "适用于数学/物理/化学题目中的方程求解与推导验证——必须用此工具实算。"
     )
     args_schema: type[BaseModel] = SolveEquationParams
 
@@ -92,7 +92,7 @@ class CheckEqualityTool(BaseTool):
     description: str = (
         "检查两个数学表达式是否等价（数学恒等关系，非字符串比较）。"
         "使用 SymPy simplify(a - b) == 0 判断。"
-        "用于验证两个物理表达式是否一致，如不同推导路径得出的公式是否等价。"
+        "适用于数学推导中验证不同路径得出的公式是否一致。"
     )
     args_schema: type[BaseModel] = CheckEqualityParams
 
@@ -118,7 +118,7 @@ class SimplifyExpressionTool(BaseTool):
     description: str = (
         "对数学表达式进行化简、展开、因式分解或三角化简。"
         "method 可选: simplify（通用化简，默认）, expand（展开）, factor（因式分解）, trigsimp（三角恒等化简）。"
-        "用于将物理公式转换形式以验证等价性或简化推导。"
+        "适用于数学推导中的公式变形与等价验证。"
     )
     args_schema: type[BaseModel] = SimplifyParams
 
@@ -218,8 +218,7 @@ class ComputeLimitTool(BaseTool):
     name: str = "compute_limit"
     description: str = (
         "计算表达式的极限。支持双侧极限和单侧极限。"
-        "用于分析物理情景的边界行为——如 t→∞ 时的稳态、x→0 时的近似。"
-        "也可验证极值、渐近线等极端情况下的物理合理性。"
+        "适用于数学分析中的函数边界行为——如 x→∞ 时的渐近线、x→0 时的近似值。"
     )
     args_schema: type[BaseModel] = ComputeLimitParams
 
@@ -230,45 +229,34 @@ class ComputeLimitTool(BaseTool):
         raise NotImplementedError
 
 
-# ---- GeometryConstructTool ----
+# ---- GeometryTool（合并构造+测量） ----
 
-class GeometryConstructParams(BaseModel):
+class GeometryParams(BaseModel):
     expression: str = Field(
-        description="几何对象构造表达式, 如 'Line(Point(0,0), Point(h, 2*h))' 或 'Circle(Point(x,y), r)' 或 'Point(x,y).midpoint(Point(a,b))'"
+        description=(
+            "几何表达式，支持构造和测量两类操作，可链式调用："
+            "构造：Line(Point(x1,y1), Point(x2,y2)) 两点定线、"
+            "Line.perpendicular_line(Point) 过点做垂线、"
+            "Circle(Point(x,y), r) 圆心+半径定圆、"
+            "Point.midpoint(Point) 中点。"
+            "测量：.distance() 距离、.angle_between() 夹角、"
+            ".intersection() 交点、.encloses_point() 包含判断。"
+            "示例: 'Point(0,0).distance(Point(3*h,4*h))' "
+            "或 'Circle(Point(0,0), 5).intersection(Line(Point(-10,3), Point(10,3)))'"
+        )
     )
 
 
-class GeometryConstructTool(BaseTool):
-    name: str = "geometry_construct"
+class GeometryTool(BaseTool):
+    name: str = "geometry"
     description: str = (
-        "构造几何对象：两点定线、过点做垂线、圆心+半径定圆、中点。"
-        "使用 SymPy geometry 语法，返回构造出的几何对象的字符串表示。"
-        "示例: Line(Point(0,0), Point(1.5*h, h)) 或 Circle(Point(0,0), 2.5*h)"
+        "几何构造与测量工具。支持构造几何对象（点、线、圆、垂线、中点）"
+        "以及测量几何关系（距离、夹角、交点、位置判断）。"
+        "可链式调用，如先构造再测量：Line(Point(0,0), Point(1,0)).angle_between(Line(Point(0,0), Point(1,1)))。"
+        "返回数值（距离/夹角）、坐标列表（交点）或布尔值（包含判断）。"
+        "适用于数学几何题的解析构造与验证。"
     )
-    args_schema: type[BaseModel] = GeometryConstructParams
-
-    def _run(self, expression: str) -> str:
-        return _run_operation("geometry", expression=expression)
-
-    async def _arun(self, *args: Any, **kwargs: Any) -> str:
-        raise NotImplementedError
-
-
-# ---- GeometryMeasureTool ----
-
-class GeometryMeasureParams(BaseModel):
-    expression: str = Field(
-        description="几何测量表达式, 如 'Point(0,0).distance(Point(3*h,4*h))' 或 'l1.angle_between(l2)' 或 'circle.intersection(line)'"
-    )
-
-
-class GeometryMeasureTool(BaseTool):
-    name: str = "geometry_measure"
-    description: str = (
-        "测量几何关系：两点/点线距离、两线夹角、几何交点（线与线、圆与线）、位置判断。"
-        "返回数值（距离/夹角）或坐标列表（交点）或布尔值（包含判断）。"
-    )
-    args_schema: type[BaseModel] = GeometryMeasureParams
+    args_schema: type[BaseModel] = GeometryParams
 
     def _run(self, expression: str) -> str:
         return _run_operation("geometry", expression=expression)
@@ -289,7 +277,7 @@ class VectorOperationsTool(BaseTool):
     name: str = "vector_operations"
     description: str = (
         "向量运算：点积、叉积（2D/3D）、向量夹角、向量投影。"
-        "用于物理中的功、力矩方向、速度合成、法向/切向分解。"
+        "适用于数学向量题以及物理中的功、力矩方向、速度合成、法向/切向分解。"
     )
     args_schema: type[BaseModel] = VectorOperationsParams
 
@@ -300,40 +288,41 @@ class VectorOperationsTool(BaseTool):
         raise NotImplementedError
 
 
-# ---- MagneticDeflectionTool ----
+# ---- CircleFromTwoPointsTool ----
 
-class MagneticDeflectionParams(BaseModel):
+class CircleFromTwoPointsParams(BaseModel):
     entry_point: list[str] = Field(
-        description="入射点坐标, 如 ['1.5*h', 'h']（支持符号表达式）"
+        description="第一个点的坐标, 如 ['1.5*h', 'h']（支持符号表达式）。物理题中对应入射点"
     )
     velocity_direction: list[float] = Field(
-        description="速度方向向量, 如 [3, 4]（无需归一化）"
+        description="第一个点处的方向向量（切线方向）, 如 [3, 4]（无需归一化）。物理题中对应速度方向"
     )
     impact_point: list[str] = Field(
-        description="撞击点坐标, 如 ['0', '-1.5*h']"
+        description="第二个点的坐标, 如 ['0', '-1.5*h']。物理题中对应撞击点"
     )
     impact_normal: list[float] = Field(
-        description="撞击面法向量（指向粒子来的方向）, 如 [0, 1]"
+        description="第二个点处的法向量（指向第一个点所在侧）, 如 [0, 1]。物理题中对应撞击面法向量"
     )
 
 
-class MagneticDeflectionTool(BaseTool):
-    name: str = "magnetic_deflection"
+class CircleFromTwoPointsTool(BaseTool):
+    name: str = "circle_from_two_points"
     description: str = (
-        "计算带电粒子在匀强磁场中的偏转几何参数。"
-        "给定入射点位置、入射速度方向、撞击点坐标和撞击面法向量，"
-        "用解析几何解出圆心坐标和偏转半径。"
-        "内部使用 SymPy geometry：垂线 → 方程联立 → 自动计算 R。"
+        "根据两点及其方向/法向量求解外接圆的圆心和半径。"
+        "给定两个点和各自的几何约束（第一个点的切线方向 + 第二个点的法向量），"
+        "通过垂线+方程联立解出唯一的圆心坐标和半径。"
+        "适用于：物理磁场偏转题（洛伦兹力提供向心力做圆周运动）、"
+        "以及数学中由两点加方向/法向量确定圆的几何问题。"
         "LLM 只需提供已知量，不需要自己做几何推理。"
     )
-    args_schema: type[BaseModel] = MagneticDeflectionParams
+    args_schema: type[BaseModel] = CircleFromTwoPointsParams
 
     def _run(
         self, entry_point: list, velocity_direction: list,
         impact_point: list, impact_normal: list,
     ) -> str:
         return _run_operation(
-            "magnetic_deflection",
+            "circle_from_two_points",
             entry_point=entry_point, velocity_direction=velocity_direction,
             impact_point=impact_point, impact_normal=impact_normal,
         )

@@ -605,14 +605,16 @@ class TestComputeLimitTool:
 # Slice 4: Geometry Tools
 # ============================================================
 
-class TestGeometryConstructTool:
-    """行为：geometry_construct 构造几何对象"""
+class TestGeometryTool:
+    """行为：geometry 构造+测量几何对象"""
 
     def _run(self, **kwargs):
-        from sympy_tools.tools import GeometryConstructTool
+        from sympy_tools.tools import GeometryTool
         import json
-        tool = GeometryConstructTool()
+        tool = GeometryTool()
         return json.loads(tool._run(**kwargs))
+
+    # ---- 构造 ----
 
     def test_construct_line_from_two_points(self):
         """两点定线：Point(0,0), Point(h, 2*h)"""
@@ -639,21 +641,7 @@ class TestGeometryConstructTool:
         assert result["success"] is True
         assert "h" in str(result["result"])
 
-    def test_tool_interface(self):
-        from sympy_tools.tools import GeometryConstructTool
-        tool = GeometryConstructTool()
-        assert tool.name == "geometry_construct"
-        assert "expression" in tool.args_schema.model_fields
-
-
-class TestGeometryMeasureTool:
-    """行为：geometry_measure 测量和交点"""
-
-    def _run(self, **kwargs):
-        from sympy_tools.tools import GeometryMeasureTool
-        import json
-        tool = GeometryMeasureTool()
-        return json.loads(tool._run(**kwargs))
+    # ---- 测量 ----
 
     def test_distance_two_points(self):
         """两点距：Point(0,0) 和 Point(3*h, 4*h) → 5*|h|"""
@@ -688,9 +676,9 @@ class TestGeometryMeasureTool:
         assert isinstance(result["result"], bool)
 
     def test_tool_interface(self):
-        from sympy_tools.tools import GeometryMeasureTool
-        tool = GeometryMeasureTool()
-        assert tool.name == "geometry_measure"
+        from sympy_tools.tools import GeometryTool
+        tool = GeometryTool()
+        assert tool.name == "geometry"
         assert "expression" in tool.args_schema.model_fields
 
 
@@ -757,13 +745,13 @@ class TestVectorOperationsTool:
 # Slice 5: Magnetic Deflection Tool
 # ============================================================
 
-class TestMagneticDeflectionTool:
-    """行为：magnetic_deflection 计算带电粒子在磁场中的偏转参数"""
+class TestCircleFromTwoPointsTool:
+    """行为：circle_from_two_points 根据两点+约束求解圆心和半径"""
 
     def _run(self, **kwargs):
-        from sympy_tools.tools import MagneticDeflectionTool
+        from sympy_tools.tools import CircleFromTwoPointsTool
         import json
-        tool = MagneticDeflectionTool()
+        tool = CircleFromTwoPointsTool()
         return json.loads(tool._run(**kwargs))
 
     def test_deflection_radius(self):
@@ -802,9 +790,9 @@ class TestMagneticDeflectionTool:
         assert result["success"] is True
 
     def test_tool_interface(self):
-        from sympy_tools.tools import MagneticDeflectionTool
-        tool = MagneticDeflectionTool()
-        assert tool.name == "magnetic_deflection"
+        from sympy_tools.tools import CircleFromTwoPointsTool
+        tool = CircleFromTwoPointsTool()
+        assert tool.name == "circle_from_two_points"
         fields = tool.args_schema.model_fields
         assert "entry_point" in fields
         assert "velocity_direction" in fields

@@ -152,7 +152,7 @@ _TEMPLATES: dict[str, Template] = {
         + "$op_code\n"
         + _SERIALIZER
     ),
-    "magnetic_deflection": Template(
+    "circle_from_two_points": Template(
         _SAFE_IMPORTS
         + "from sympy.geometry import Point, Line, Circle, intersection\n"
         + "\n$setup_code\n"
@@ -353,7 +353,7 @@ def build_code(operation: str, **params) -> str:
     else:
         op_code = "result = 'unsupported'"
 
-    # Magnetic deflection params
+    # Circle from two points params
     entry_point = params.get("entry_point", ["0", "0"])
     velocity_direction = params.get("velocity_direction", [1, 0])
     impact_point = params.get("impact_point", ["0", "0"])

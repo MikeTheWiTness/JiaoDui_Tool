@@ -9,10 +9,11 @@ from sympy_tools.tools import (
     SolvePhysicsFormulaTool,
     DimensionalAnalysisTool,
     ComputeLimitTool,
-    GeometryConstructTool,
-    GeometryMeasureTool,
+    GeometryTool,
     VectorOperationsTool,
-    MagneticDeflectionTool,
+    CircleFromTwoPointsTool,
+    BalanceChemicalEquationTool,
+    StoichiometryCalcTool,
 )
 
 ALL_TOOLS = [
@@ -23,10 +24,11 @@ ALL_TOOLS = [
     SolvePhysicsFormulaTool(),
     DimensionalAnalysisTool(),
     ComputeLimitTool(),
-    GeometryConstructTool(),
-    GeometryMeasureTool(),
+    GeometryTool(),
     VectorOperationsTool(),
-    MagneticDeflectionTool(),
+    CircleFromTwoPointsTool(),
+    BalanceChemicalEquationTool(),
+    StoichiometryCalcTool(),
 ]
 
 
