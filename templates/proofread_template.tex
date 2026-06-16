@@ -16,6 +16,8 @@
 
 % xeCJK 文字装饰（CJK 兼容的删除线/下划线）
 \usepackage{xeCJKfntef}
+% 数学模式划线
+\usepackage{cancel}
 
 % === 页面设置 ===
 \geometry{
@@ -35,9 +37,13 @@
 }
 
 % === 自定义命令：修改标记 ===
-% text 类型：红色删除线（CJK 兼容）+ 蓝色正确文字
+% text 类型：红色删除线 + 蓝色正确文字（自动适配文字/数学模式）
 \newcommand{\corrtext}[2]{%
-  \textcolor{red}{\CJKsout{#1}}~\textcolor{blue}{#2}%
+  \ifmmode
+    \textcolor{red}{\cancel{#1}}\to\textcolor{blue}{#2}%
+  \else
+    \textcolor{red}{\CJKsout{#1}}~\textcolor{blue}{#2}%
+  \fi
 }
 
 % rewrite 类型：红色框包裹原文（自动换行）
