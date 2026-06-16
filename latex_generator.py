@@ -37,9 +37,12 @@ def _escape_preserve_math(text: str) -> str:
         if not part:
             continue
         if part.startswith("$"):
-            result.append(part)
+            # 数学模式内：CJK 字符用 \text{} 包裹
+            part = re.sub(r'([一-鿿㐀-䶿豈-﫿]+)',
+                          r'\\text{\1}', part)
         else:
-            result.append(_escape_text(part))
+            part = _escape_text(part)
+        result.append(part)
     return "".join(result)
 
 
