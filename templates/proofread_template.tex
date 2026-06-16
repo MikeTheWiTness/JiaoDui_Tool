@@ -11,39 +11,51 @@
 \usepackage{graphicx}
 \usepackage{paracol}
 \usepackage{xcolor}
-\usepackage{ulem}
 \usepackage{fancyhdr}
 \usepackage{geometry}
+
+% xeCJK 文字装饰（CJK 兼容的删除线/下划线）
+\usepackage{xeCJKfntef}
 
 % === 页面设置 ===
 \geometry{
   a4paper,
-  left=2cm,
-  right=2cm,
+  left=1.5cm,
+  right=1.5cm,
   top=2cm,
-  bottom=2cm
+  bottom=2cm,
+  columnsep=1cm
+}
+
+% === 内部辅助：计算 paracol 列宽 ===
+% paracol 中 \linewidth = 列宽，减掉 fbox 边框和间距
+\newlength{\colwidthinner}
+\newcommand{\calccolwidth}{%
+  \setlength{\colwidthinner}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
 }
 
 % === 自定义命令：修改标记 ===
-% text 类型：红色删除线 + 蓝色正确文字
+% text 类型：红色删除线（CJK 兼容）+ 蓝色正确文字
 \newcommand{\corrtext}[2]{%
-  \textcolor{red}{\sout{#1}}~\textcolor{blue}{#2}%
+  \textcolor{red}{\CJKsout{#1}}~\textcolor{blue}{#2}%
 }
 
-% rewrite 类型：红色框包裹原文
+% rewrite 类型：红色框包裹原文（自动换行）
 \newcommand{\corrrewrite}[1]{%
-  \fcolorbox{red}{red!5}{#1}%
+  \calccolwidth
+  \fcolorbox{red}{red!10}{\parbox{\colwidthinner}{#1}}%
 }
 
-% region 类型：红色虚线框
+% region 类型：红色框标记区域（自动换行）
 \newcommand{\corrregion}[1]{%
-  \fboxsep=2pt%
-  \fcolorbox{red}{red!5}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{#1}}%
+  \calccolwidth
+  \fcolorbox{red}{red!10}{\parbox{\colwidthinner}{#1}}%
 }
 
-% 修改建议高亮框（右侧）
+% 修改建议高亮框（右侧栏）
 \newcommand{\correctionbox}[1]{%
-  \colorbox{blue!5}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{#1}}%
+  \calccolwidth
+  \colorbox{blue!8}{\parbox{\colwidthinner}{#1}}%
 }
 
 % === 页眉页脚 ===

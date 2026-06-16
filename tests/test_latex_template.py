@@ -276,26 +276,33 @@ class TestParacolCorrections:
         """混合使用三种修改类型"""
         content = r"""
         \begin{paracol}{2}
-        题目：下列说法正确的是
+
+        \textbf{题目：}下列说法正确的是。
 
         A. \corrtext{碘晶体层内和层间均为分子间作用力}{碘晶体中分子间均以范德华力结合}
 
         B. 晶胞内只存在共价键，属于共价晶体
 
-        C. 金刚石中C原子半径小于Si，所以\corrtext{C---C键}{C-C键}键长更短
+        C. 金刚石中C原子半径小于Si，\corrtext{C---C键}{C-C键}键长更短
 
         D. 配图如\corrregion{图1}所示
         \switchcolumn
 
-        \correctionbox{A选项修改建议：混淆了分子内共价键与分子间作用力的概念。}
+        \noindent\correctionbox{\textbf{A选项}：混淆了分子内共价键与
+        分子间作用力的概念。碘晶体中I$_2$分子内部为共价键，仅层内、层间
+        的I$_2$分子间作用力为范德华力。}
 
-        \vspace{1cm}
+        \bigskip
 
-        \correctionbox{C选项修改建议："C---C键"表示不规范，应为"C-C键"}
+        \noindent\correctionbox{\textbf{C选项}：三个短横线表示碳碳三键，
+        而金刚石中碳原子间为碳碳单键，应写为"C-C键"。}
 
-        \vspace{1cm}
+        \bigskip
 
-        \correctionbox{D选项配图问题：图1中标注有误。}
+        \noindent\correctionbox{\textbf{D选项}：配图与物质标注可能不一致，
+        需人工核对图中B和C的化学结构是否与标注对应。}
+        \switchcolumn*
+
         \end{paracol}
         """
         pdf_path, log = _compile_tex(content, job_name="cycle6_mixed")
@@ -337,46 +344,49 @@ class TestEndToEndPhysics:
         $$\Delta x = x_5 - x_4 = 75 - 56 = 19\,\text{m}$$
         """
 
-        # 用 paracol 构建双栏内容
-        # 无问题的段落直接放左栏，有问题的段落嵌入修改标记
+        # 用 paracol 构建双栏内容（分段同步：每个校对点一个 synchronized block）
         paracol_content = r"""
         \begin{paracol}{2}
 
-        \noindent\textbf{例1} 一辆汽车以初速度 $v_0 = 10\,\text{m/s}$ 在平直公路上行驶，
+        \noindent\textbf{例1}
+        一辆汽车以初速度 $v_0 = 10\,\text{m/s}$ 在平直公路上行驶，
         以加速度 $a = 2\,\text{m/s}^2$ 做匀加速直线运动。求：
 
         （1）汽车在第 3 秒末的速度；\\
         （2）汽车在前 5 秒内的位移；\\
         （3）汽车在第 5 秒内的位移。
         \switchcolumn
-        \correctionbox{\textbf{题干审校}：物理情景清晰，条件完整，已知量、未知量表述规范。无问题。}
+        \correctionbox{\textbf{题干审校}：物理情景清晰，条件完整。无问题。}
         \switchcolumn*
 
-        \vspace{0.5cm}
+        \medskip
         \noindent\textbf{解答：}
 
-        \noindent（1）由匀变速直线运动速度公式 $v_t = v_0 + at$ 得：
+        （1）由 $v_t = v_0 + at$ 得：
         $$v_3 = 10 + 2 \times 3 = 16\,\text{m/s}$$
         \switchcolumn
-        \correctionbox{\textbf{第（1）问}：计算正确。$16\,\text{m/s}$ 无误。}
+        \correctionbox{\textbf{（1）审校}：公式选择正确，代入无误。$16\,\text{m/s}$。}
         \switchcolumn*
 
-        \vspace{0.5cm}
-        \noindent（2）由位移公式 $x = v_0t + \frac{1}{2}at^2$ 得：
-        $$\corrtext{x_5 = 10 \times 5 + \frac{1}{2} \times 2 \times 5^2 = 50 + 25 = 75\,\text{m}}
-        {x_5 = 10 \times 5 + \frac{1}{2} \times 2 \times 5^2 = 50 + 25 = 75\,\text{m}}$$
+        \medskip
+        （2）由 $x = v_0t + \frac{1}{2}at^2$ 得：
+        $$x_5 = 10 \times 5 + \frac{1}{2} \times 2 \times 5^2 = 50 + 25 = 75\,\text{m}$$
         \switchcolumn
-        \correctionbox{\textbf{第（2）问}：原本计算过程和结果均正确，此处演示 text 类型标记（无实际错误）。}
+        \correctionbox{\textbf{（2）审校}：计算过程完整，结果 $75\,\text{m}$ 正确。}
         \switchcolumn*
 
-        \vspace{0.5cm}
-        \noindent（3）第 5 秒内位移 = 前 5 秒位移 - 前 4 秒位移：
+        \medskip
+        （3）第 5 秒内位移 = 前 5 秒位移 $-$ 前 4 秒位移：
         $$x_4 = 10 \times 4 + \frac{1}{2} \times 2 \times 4^2 = 40 + 16 = 56\,\text{m}$$
         $$\Delta x = x_5 - x_4 = 75 - 56 = 19\,\text{m}$$
         \switchcolumn
-        \correctionbox{\textbf{第（3）问}：计算步骤完整，结果正确。$19\,\text{m}$ 无误。}\\[0.3cm]
-        \correctionbox{\textbf{校对总结}：本题无实质性错误。物理情景描述准确，公式使用恰当，
-        计算过程完整。整体等级：无问题。}
+        \correctionbox{\textbf{（3）审校}：分步计算清晰，$\Delta x = 19\,\text{m}$ 无误。}
+        \switchcolumn*
+
+        \switchcolumn
+        \bigskip
+        \correctionbox{\textbf{校对总结}：无实质性错误。物理情景准确，公式使用恰当，
+        计算完整。整体等级：\textbf{无问题}。}
         \switchcolumn*
 
         \end{paracol}
