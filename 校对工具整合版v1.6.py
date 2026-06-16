@@ -21,56 +21,63 @@ except ImportError:
 import subject_config
 
 # ========================= 路径工具 =========================
-def _fix_json_escapes(s: str) -> str:
-    _VALID_SINGLE = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't'}
-    result = []
-    i = 0
-    while i < len(s):
-        if s[i] == '\\' and i + 1 < len(s):
-            nxt = s[i + 1]
-            if nxt == 'u':
-                result.append('\\')
-            elif nxt in _VALID_SINGLE:
-                if i + 2 < len(s) and s[i + 2].isalpha():
-                    result.append('\\\\')
-                else:
-                    result.append('\\')
+def _parse_proofread_md(text: str):
+    """从 LLM 返回的 Markdown 校对结果中提取结构化数据"""
+    if not text or not text.strip():
+        return None
+    text = text.strip()
+    summary = ""
+    first_line = text.split("\n")[0].strip()
+    for kw in ["严重错误", "一般问题", "轻微问题", "无问题"]:
+        if kw in first_line:
+            summary = kw
+            break
+    blocks = re.split(r"\n?(?:###+\s*修改\s*\d+)\s*\n", text)
+    corrections = []
+    for block in blocks[1:]:
+        corr = {}
+        cur_field = None
+        cur_val = []
+        for line in block.strip().split("\n"):
+            s = line.strip()
+            matched = False
+            for prefix, field in [("- **类型**:", "type"), ("- **原文**:", "original"),
+                                   ("- **改为**:", "correction"), ("- **原因**:", "reason"),
+                                   ("- **位置**:", "location")]:
+                if s.startswith(prefix):
+                    if cur_field and cur_val:
+                        v = "\n".join(cur_val)
+                        if cur_field in ("original", "correction", "location"):
+                            m = re.search(r"``(.+?)``", v) or re.search(r"`([^`]+)`", v)
+                            corr[cur_field] = m.group(1) if m else v
+                        else:
+                            corr[cur_field] = v
+                    cur_field = field
+                    cur_val = [s.split(":", 1)[1].strip() if ":" in s else ""]
+                    matched = True
+                    break
+            if not matched and cur_field:
+                cur_val.append(s)
+        if cur_field and cur_val:
+            v = "\n".join(cur_val)
+            if cur_field in ("original", "correction", "location"):
+                m = re.search(r"``(.+?)``", v) or re.search(r"`([^`]+)`", v)
+                corr[cur_field] = m.group(1) if m else v
             else:
-                result.append('\\\\')
-            i += 1
-        else:
-            result.append(s[i])
-        i += 1
-    return ''.join(result)
+                corr[cur_field] = v
+        if corr.get("original") or corr.get("location"):
+            corr.setdefault("type", "text")
+            corr.setdefault("correction", "")
+            corr.setdefault("reason", "")
+            corrections.append(corr)
+    if not summary and not corrections:
+        return None
+    return {"corrections": corrections, "summary": summary or "无问题"}
 
 
 def _extract_json(text: str):
-    """从 LLM 返回文本中提取 JSON 对象，自动修复非法 JSON 转义"""
-    if not text:
-        return None
-    text = text.strip()
-    if text.startswith("{"):
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if m:
-        block = m.group(1).strip()
-        if block.startswith("{"):
-            try:
-                return json.loads(block)
-            except json.JSONDecodeError:
-                pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        json_str = _fix_json_escapes(text[start:end + 1])
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            pass
-    return None
+    """兼容旧接口：从 LLM 文本中提取结构化数据"""
+    return _parse_proofread_md(text)
 
 
 def _save_proofread_json(res: str, q_dir: str):

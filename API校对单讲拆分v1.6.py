@@ -15,86 +15,103 @@ except ImportError:
 import subject_config
 
 
-def _extract_json(text: str) -> dict | None:
-    """从 LLM 返回文本中提取 JSON 对象。
+def _parse_proofread_md(text: str) -> dict | None:
+    """从 LLM 返回的 Markdown 校对结果中提取结构化数据。
 
-    处理三种情况：
-    1. 裸 JSON 对象 {...}
-    2. Markdown 代码块包裹的 JSON ```json ... ```
-    3. 文本中嵌入的 JSON 对象
-
-    自动修复 LLM 常见的非法 JSON 转义（如 \\mathrm 写成 \mathrm）。
+    格式：
+        无问题 / 轻微问题 / 一般问题 / 严重错误
+        ### 修改 1
+        - **类型**: text
+        - **原文**: ``原文精确文字``
+        - **改为**: ``修改后文字``
+        - **原因**: 原因说明
     """
-    if not text:
+    if not text or not text.strip():
         return None
 
     text = text.strip()
+    summary = ""
+    first_line = text.split("\n")[0].strip()
+    for kw in ["严重错误", "一般问题", "轻微问题", "无问题"]:
+        if kw in first_line:
+            summary = kw
+            break
 
-    # 尝试 1：直接解析
-    if text.startswith("{"):
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
+    # 拆分修改块
+    blocks = re.split(r"\n?(?:###+\s*修改\s*\d+)\s*\n", text)
+    corrections = []
 
-    # 尝试 2：提取 ```json ... ``` 代码块
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if m:
-        block = m.group(1).strip()
-        if block.startswith("{"):
-            try:
-                return json.loads(block)
-            except json.JSONDecodeError:
-                pass
+    for block in blocks[1:]:
+        corr = _parse_correction_block(block)
+        if corr and (corr.get("original") or corr.get("location")):
+            corr.setdefault("type", "text")
+            corr.setdefault("correction", "")
+            corr.setdefault("reason", "")
+            corrections.append(corr)
 
-    # 尝试 3：提取 { 到 } 之间的内容，修复非法反斜杠
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        json_str = _fix_json_escapes(text[start:end + 1])
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            pass
+    if not summary and not corrections:
+        return None
 
-    return None
+    return {"corrections": corrections, "summary": summary or "无问题"}
 
 
-def _fix_json_escapes(s: str) -> str:
-    """修复 JSON 字符串中非法的反斜杠转义。
+def _parse_correction_block(block: str) -> dict | None:
+    """解析单个修改块，支持多行反引号内容"""
+    corr = {}
+    current_field = None
+    current_value = []
 
-    LLM 输出 LaTeX 命令时可能忘记双写反斜杠（如 \\sin 写成 \\sin）。
-    对于 \\ 后跟非法 JSON 转义字符，或在合法转义字符后还有字母（如 \\times 非 tab），
-    将单个 \\ 替换为 \\\\。
-    """
-    # 合法 JSON 单字符转义
-    _VALID_SINGLE = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't'}
-    result = []
-    i = 0
-    while i < len(s):
-        if s[i] == '\\' and i + 1 < len(s):
-            nxt = s[i + 1]
-            if nxt == 'u':
-                # unicode 转义 \uXXXX — 检查后续是否合法
-                result.append('\\')
-            elif nxt in _VALID_SINGLE:
-                # \n \t 等 — 但若后一个字符仍是字母，则是 LaTeX 命令（如 \times, \nabla）
-                if i + 2 < len(s) and s[i + 2].isalpha():
-                    result.append('\\\\')  # LaTeX 命令，双写
-                else:
-                    result.append('\\')    # 真正的 JSON 转义
-            else:
-                result.append('\\\\')     # 非法转义，双写
-            i += 1
+    for line in block.strip().split("\n"):
+        stripped = line.strip()
+
+        # 检查是否是新字段
+        for prefix, field in [
+            ("- **类型**:", "type"),
+            ("- **原文**:", "original"),
+            ("- **改为**:", "correction"),
+            ("- **原因**:", "reason"),
+            ("- **位置**:", "location"),
+        ]:
+            if stripped.startswith(prefix):
+                # 保存上一个字段
+                if current_field and current_value:
+                    val = "\n".join(current_value)
+                    if current_field in ("original", "correction", "location"):
+                        corr[current_field] = _extract_backtick(val)
+                    else:
+                        corr[current_field] = val
+                current_field = field
+                current_value = [stripped.split(":", 1)[1].strip() if ":" in stripped else ""]
+                break
         else:
-            result.append(s[i])
-        i += 1
-    return ''.join(result)
+            # 续行（多行反引号内容）
+            if current_field:
+                current_value.append(stripped)
+
+    # 保存最后一个字段
+    if current_field and current_value:
+        val = "\n".join(current_value)
+        if current_field in ("original", "correction", "location"):
+            corr[current_field] = _extract_backtick(val)
+        else:
+            corr[current_field] = val
+
+    return corr if corr else None
+
+
+def _extract_backtick(line: str) -> str:
+    """从行中提取反引号包裹的内容"""
+    m = re.search(r"``(.+?)``", line)
+    if m:
+        return m.group(1)
+    # 备选：单反引号
+    m = re.search(r"`([^`]+)`", line)
+    return m.group(1) if m else ""
 
 
 def _save_proofread_json(res: str, q_dir: str):
-    """尝试从 LLM 返回结果中提取 JSON 并保存为 _校对数据.json"""
-    data = _extract_json(res)
+    """从 LLM 返回的 Markdown 中提取结构化数据并保存为 _校对数据.json"""
+    data = _parse_proofread_md(res)
     if data is None:
         return False
 
