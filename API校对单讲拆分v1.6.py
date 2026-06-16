@@ -63,20 +63,28 @@ def _extract_json(text: str) -> dict | None:
 def _fix_json_escapes(s: str) -> str:
     """修复 JSON 字符串中非法的反斜杠转义。
 
-    LLM 常输出 LaTeX 命令如 \\sin、\\mathrm，但 JSON 中 \\s、\\m 等不是合法转义。
-    将非法转义的 \\ 替换为 \\\\。
-    合法转义：\\\" \\\\ \\/ \\b \\f \\n \\r \\t 及 \\uXXXX
+    LLM 输出 LaTeX 命令时可能忘记双写反斜杠（如 \\sin 写成 \\sin）。
+    对于 \\ 后跟非法 JSON 转义字符，或在合法转义字符后还有字母（如 \\times 非 tab），
+    将单个 \\ 替换为 \\\\。
     """
-    VALID = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'}
+    # 合法 JSON 单字符转义
+    _VALID_SINGLE = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't'}
     result = []
     i = 0
     while i < len(s):
         if s[i] == '\\' and i + 1 < len(s):
-            next_ch = s[i + 1]
-            if next_ch not in VALID:
-                result.append('\\\\')
-            else:
+            nxt = s[i + 1]
+            if nxt == 'u':
+                # unicode 转义 \uXXXX — 检查后续是否合法
                 result.append('\\')
+            elif nxt in _VALID_SINGLE:
+                # \n \t 等 — 但若后一个字符仍是字母，则是 LaTeX 命令（如 \times, \nabla）
+                if i + 2 < len(s) and s[i + 2].isalpha():
+                    result.append('\\\\')  # LaTeX 命令，双写
+                else:
+                    result.append('\\')    # 真正的 JSON 转义
+            else:
+                result.append('\\\\')     # 非法转义，双写
             i += 1
         else:
             result.append(s[i])

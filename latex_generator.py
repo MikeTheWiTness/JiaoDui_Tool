@@ -201,11 +201,11 @@ def generate_combined_pdf(lecture_dir: str, pdf_output_dir: str | None = None) -
     """扫描讲义目录下所有题目/知识子目录，生成一份汇总 PDF。
 
     每个子目录生成独立的 paracol 双栏，\newpage 分隔。
+    自动汇总各子目录的图片到统一 images/ 目录。
     """
     if not os.path.isdir(lecture_dir):
         return None
 
-    # 扫描子目录
     subdirs = []
     for entry in sorted(os.listdir(lecture_dir)):
         full = os.path.join(lecture_dir, entry)
@@ -215,8 +215,9 @@ def generate_combined_pdf(lecture_dir: str, pdf_output_dir: str | None = None) -
     if not subdirs:
         return None
 
-    # 逐个构建 paracol 内容
+    # 逐个构建 paracol 内容，同时收集图片
     sections = []
+    all_images = {}  # {filename: source_path}
     for subdir in subdirs:
         json_path = os.path.join(subdir, "_校对数据.json")
         md_path = _find_md_file(subdir)
@@ -234,25 +235,35 @@ def generate_combined_pdf(lecture_dir: str, pdf_output_dir: str | None = None) -
 
         sections.append(f"\\section*{{{section_title}}}\n{para_content}")
 
+        # 收集该子目录的图片
+        img_dir = os.path.join(subdir, "images")
+        if os.path.isdir(img_dir):
+            for fname in os.listdir(img_dir):
+                all_images[fname] = os.path.join(img_dir, fname)
+
     if not sections:
         return None
 
     combined = "\n\n\\newpage\n\n".join(sections)
-
-    # 生成标题
     lecture_name = os.path.basename(lecture_dir.rstrip("/\\"))
 
-    # 填充模板
     with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
         template = f.read()
 
     full_tex = template.replace("{{CONTENT}}", combined)
     full_tex = full_tex.replace(r"\title{校对报告}", r"\title{" + lecture_name + "}")
 
-    # 输出路径
     if pdf_output_dir is None:
         pdf_output_dir = lecture_dir
     os.makedirs(pdf_output_dir, exist_ok=True)
+
+    # 汇总图片到统一的 images/ 目录
+    if all_images:
+        unified_img = os.path.join(pdf_output_dir, "images")
+        os.makedirs(unified_img, exist_ok=True)
+        for fname, src in all_images.items():
+            import shutil
+            shutil.copy2(src, os.path.join(unified_img, fname))
 
     safe_name = lecture_name.replace(" ", "_")
     tex_path = os.path.join(pdf_output_dir, f"{safe_name}.tex")

@@ -22,12 +22,22 @@ import subject_config
 
 # ========================= 路径工具 =========================
 def _fix_json_escapes(s: str) -> str:
-    VALID = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'}
+    _VALID_SINGLE = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't'}
     result = []
     i = 0
     while i < len(s):
-        if s[i] == '\\' and i + 1 < len(s) and s[i + 1] not in VALID:
-            result.append('\\\\')
+        if s[i] == '\\' and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt == 'u':
+                result.append('\\')
+            elif nxt in _VALID_SINGLE:
+                if i + 2 < len(s) and s[i + 2].isalpha():
+                    result.append('\\\\')
+                else:
+                    result.append('\\')
+            else:
+                result.append('\\\\')
+            i += 1
         else:
             result.append(s[i])
         i += 1
