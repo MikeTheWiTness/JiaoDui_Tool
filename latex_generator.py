@@ -151,9 +151,9 @@ def build_paracol_content(md_content: str, corrections: list[dict]) -> str:
 
     escaped = _escape_preserve_math(md_content)
     escaped = _convert_images(escaped)
-    # 单换行 → LaTeX 换行（双换行仍是段落分隔）
-    escaped = escaped.replace("\n\n", "\n\n")  # 保留段落分隔
-    # 单换行：不在数学模式内的转成 \\
+    # Markdown 标题 # → 粗体文字（匹配行首 # 后跟空格、文字，到行尾）
+    escaped = re.sub(r'^#{1,4}\s+(.+)', r'\\textbf{\1}', escaped, flags=re.MULTILINE)
+    # 单换行 → LaTeX 换行
     escaped = _newline_to_latex(escaped)
 
     marked, numbered = _apply_markers(escaped, corrections)

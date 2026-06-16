@@ -1,0 +1,88 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+% === 字体设置 ===
+\setCJKmainfont{SimSun}
+\setmainfont{Times New Roman}
+
+% === 宏包 ===
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[version=4]{mhchem}
+\usepackage{graphicx}
+\usepackage{paracol}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{geometry}
+
+% === 页面设置 ===
+\geometry{
+  a4paper,
+  left=1.5cm,
+  right=1.5cm,
+  top=2cm,
+  bottom=2cm,
+  columnsep=1cm
+}
+
+% === 内部辅助：计算 paracol 列宽 ===
+\newlength{\colwidthinner}
+\newcommand{\calccolwidth}{%
+  \setlength{\colwidthinner}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+}
+
+% 右栏：修改建议框
+\newcommand{\correctionbox}[1]{%
+  \calccolwidth
+  \colorbox{blue!8}{\parbox{\colwidthinner}{#1}}%
+}
+
+% === 页眉页脚 ===
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{校对报告}
+\fancyhead[R]{\leftmark}
+\fancyfoot[C]{\thepage}
+
+\begin{document}
+
+\title{test}
+\author{}
+\date{}
+\maketitle
+
+\begin{paracol}{2}
+
+**一本班1**（多选）\\
+如图所示\textsuperscript{\textcolor{red}{\textcircled{1}}}，利用斜面从货车上卸货，每包货物的质量$m=20\mathrm{kg}$，斜面倾角$\alpha ={37}^{\circ }$，斜面的长度$l=0.5\mathrm{m}$，货物与斜面间的动摩擦因数$\mu =0.2$，货物从斜面顶端滑到底端的过程中，有（ ）（取$g=10\mathrm{m}/{\mathrm{s}}^{2}$）\textsuperscript{\textcolor{red}{\textcircled{2}}}\\
+A.                                  重力对货物做的功为$60\mathrm{J}$\\
+B.                                  斜面支持力对货物做的功为$0$\\
+C.                                  斜面摩擦力对货物做的功为$16\mathrm{J}$\\
+D.                                  合外力对货物做的功为$76\mathrm{J}$\\
+答案:\\
+AB\\
+解答：                             重力做功：${W}_{\mathrm G}=mgL\sin {37}^{\circ }=60\mathrm{J}$\textsuperscript{\textcolor{red}{\textcircled{3}}}，选项$\mathrm{A}$正确；\\
+支持力方向与位移方向垂直，不做功，则有：${W}_{\mathrm N}=0$，选项$\mathrm{B}$正确；\\
+滑动摩擦力为：$f=\mu {F}_{\mathrm{N}}=0.2\times 20\times 10\times 0.8\mathrm{N}=32\mathrm{N}$，则摩擦力做功为：${W}_{\mathrm{f}}=-fL=-32\times 0.5\mathrm{J}=-16\mathrm{J}$\textsuperscript{\textcolor{red}{\textcircled{4}}}，选项$\mathrm{C}$错误；\\
+合外力做功为：${W}_{合}={W}_{\mathrm{N}}+{W}_{\mathrm{f}}+{W}_{\mathrm{G}}=60\mathrm{J}-16\mathrm{J}=44\mathrm{J}$，选项$\mathrm{D}$错误。\\
+
+\switchcolumn
+
+\correctionbox{\textcircled{1} 题干提及“如图所示”但未提供对应配图，存在图片缺失，需补充配图以完善题干表述。}
+\medskip
+
+\correctionbox{\textcircled{2} 调整重力加速度说明的位置至问题前，补充多选题常规引导语，使题干表述通顺、逻辑清晰。}
+\medskip
+
+\correctionbox{\textcircled{3} 与题干中斜面长度的符号\$l\$保持一致，规范物理量符号使用。}
+\medskip
+
+\correctionbox{\textcircled{4} 与题干中斜面长度的符号\$l\$保持一致，规范物理量符号使用。
+
+---}
+\medskip
+
+\switchcolumn*
+
+\end{paracol}
+
+\end{document}
