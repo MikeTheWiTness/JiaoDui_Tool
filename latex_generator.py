@@ -60,12 +60,39 @@ def _newline_to_latex(text: str) -> str:
     return "".join(result)
 
 
-def _convert_images(text: str) -> str:
-    return re.sub(
-        r"!\[.*?\]\((.*?)\)",
-        r"\\includegraphics[width=\\linewidth]{\1}",
-        text,
+_IMG_COUNTER = 0
+
+
+def _extract_images(text: str) -> tuple[str, dict[str, str]]:
+    """提取 Markdown 图片为占位符，返回 (处理后文本, {占位符: LaTeX代码})"""
+    global _IMG_COUNTER
+    img_map = {}
+
+    def _repl(m):
+        global _IMG_COUNTER
+        _IMG_COUNTER += 1
+        key = f"IMAGEPLACEHOLDER{_IMG_COUNTER}"
+        path = m.group(1)
+        img_map[key] = (
+            "\\\\\n\\includegraphics[width=\\linewidth,keepaspectratio]{" + path + "}"
+        )
+        return key
+
+    # ![](path){width="X" height="Y"}
+    text = re.sub(
+        r"!\[.*?\]\((.*?)\)\s*\{width=\"[^\"]*\"\s+height=\"[^\"]*\"\}",
+        _repl, text,
     )
+    # ![](path)
+    text = re.sub(r"!\[.*?\]\((.*?)\)", _repl, text)
+    return text, img_map
+
+
+def _restore_images(text: str, img_map: dict[str, str]) -> str:
+    """将占位符替换回 LaTeX 图片代码"""
+    for key, latex in img_map.items():
+        text = text.replace(key, latex)
+    return text
 
 
 def _norm_pos(original: str, norm_pos: int) -> int:
@@ -152,8 +179,10 @@ def _format_right_entry(corr: dict) -> str:
 def build_paracol_content(md_content: str, corrections: list[dict]) -> str:
     corrections = corrections or []
 
-    escaped = _escape_preserve_math(md_content)
-    escaped = _convert_images(escaped)
+    # 先提取图片为占位符，转义后再替换（避免 LaTeX 命令被 escape）
+    md_with_placeholders, img_map = _extract_images(md_content)
+    escaped = _escape_preserve_math(md_with_placeholders)
+    escaped = _restore_images(escaped, img_map)
     # Markdown 标题 # → 粗体文字（匹配行首 # 后跟空格、文字，到行尾）
     escaped = re.sub(r'^#{1,4}\s+(.+)', r'\\textbf{\1}', escaped, flags=re.MULTILINE)
     # 单换行 → LaTeX 换行
