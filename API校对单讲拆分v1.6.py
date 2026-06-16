@@ -22,6 +22,8 @@ def _extract_json(text: str) -> dict | None:
     1. 裸 JSON 对象 {...}
     2. Markdown 代码块包裹的 JSON ```json ... ```
     3. 文本中嵌入的 JSON 对象
+
+    自动修复 LLM 常见的非法 JSON 转义（如 \\mathrm 写成 \mathrm）。
     """
     if not text:
         return None
@@ -45,16 +47,41 @@ def _extract_json(text: str) -> dict | None:
             except json.JSONDecodeError:
                 pass
 
-    # 尝试 3：查找第一个 { 到最后一个 } 之间的内容
+    # 尝试 3：提取 { 到 } 之间的内容，修复非法反斜杠
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
+        json_str = _fix_json_escapes(text[start:end + 1])
         try:
-            return json.loads(text[start:end + 1])
+            return json.loads(json_str)
         except json.JSONDecodeError:
             pass
 
     return None
+
+
+def _fix_json_escapes(s: str) -> str:
+    """修复 JSON 字符串中非法的反斜杠转义。
+
+    LLM 常输出 LaTeX 命令如 \\sin、\\mathrm，但 JSON 中 \\s、\\m 等不是合法转义。
+    将非法转义的 \\ 替换为 \\\\。
+    合法转义：\\\" \\\\ \\/ \\b \\f \\n \\r \\t 及 \\uXXXX
+    """
+    VALID = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'}
+    result = []
+    i = 0
+    while i < len(s):
+        if s[i] == '\\' and i + 1 < len(s):
+            next_ch = s[i + 1]
+            if next_ch not in VALID:
+                result.append('\\\\')
+            else:
+                result.append('\\')
+            i += 1
+        else:
+            result.append(s[i])
+        i += 1
+    return ''.join(result)
 
 
 def _save_proofread_json(res: str, q_dir: str):

@@ -21,8 +21,21 @@ except ImportError:
 import subject_config
 
 # ========================= 路径工具 =========================
+def _fix_json_escapes(s: str) -> str:
+    VALID = {'"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'}
+    result = []
+    i = 0
+    while i < len(s):
+        if s[i] == '\\' and i + 1 < len(s) and s[i + 1] not in VALID:
+            result.append('\\\\')
+        else:
+            result.append(s[i])
+        i += 1
+    return ''.join(result)
+
+
 def _extract_json(text: str):
-    """从 LLM 返回文本中提取 JSON 对象"""
+    """从 LLM 返回文本中提取 JSON 对象，自动修复非法 JSON 转义"""
     if not text:
         return None
     text = text.strip()
@@ -42,8 +55,9 @@ def _extract_json(text: str):
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
+        json_str = _fix_json_escapes(text[start:end + 1])
         try:
-            return json.loads(text[start:end + 1])
+            return json.loads(json_str)
         except json.JSONDecodeError:
             pass
     return None
@@ -1430,7 +1444,7 @@ class IntegratedApp:
                 if not self.task_interrupt and paper_results:
                     try:
                         from latex_generator import generate_combined_pdf
-                        pdf_dir = os.path.join(os.path.dirname(split_root) or os.path.dirname(out_root), "校对PDF")
+                        pdf_dir = os.path.join("output", "校对PDF")
                         pdf_path = generate_combined_pdf(paper_path, pdf_dir)
                         if pdf_path:
                             log(f"   📄 汇总 PDF：{pdf_path}")
