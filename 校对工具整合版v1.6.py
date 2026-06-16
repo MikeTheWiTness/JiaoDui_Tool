@@ -1426,6 +1426,19 @@ class IntegratedApp:
                 if not self.task_interrupt and paper_results:
                     self._export_paper_report(paper_name, paper_results, report_root)
 
+                # 生成汇总 PDF
+                if not self.task_interrupt and paper_results:
+                    try:
+                        from latex_generator import generate_combined_pdf
+                        pdf_dir = os.path.join(os.path.dirname(split_root) or os.path.dirname(out_root), "校对PDF")
+                        pdf_path = generate_combined_pdf(paper_path, pdf_dir)
+                        if pdf_path:
+                            log(f"   📄 汇总 PDF：{pdf_path}")
+                        else:
+                            log(f"   ⚠️ 汇总 PDF 生成失败（无可用的校对数据）")
+                    except Exception as e:
+                        log(f"   ⚠️ 汇总 PDF 生成异常：{e}")
+
             if self.task_interrupt:
                 log("\n===== 任务已中断 =====")
             else:

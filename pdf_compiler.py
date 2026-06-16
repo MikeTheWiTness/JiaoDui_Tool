@@ -51,19 +51,14 @@ def compile_to_pdf(tex_path: str, output_dir: str | None = None) -> str:
         if os.path.isdir(images_src):
             shutil.copytree(images_src, os.path.join(tmpdir, "images"), dirs_exist_ok=True)
 
-        # 在临时目录中编译
-        cmd = [
-            XELATEX,
-            "-interaction=nonstopmode",
-            "-output-directory=" + tmpdir,
-            tmp_tex,
-        ]
+        # 在临时目录中编译（shell=True 避免 Python 3.14 subprocess 句柄 bug）
         log_path = os.path.join(tmpdir, "_xelatex.log")
-        with open(log_path, "w", encoding="utf-8") as log_f:
-            retcode = subprocess.call(
-                cmd, stdout=log_f, stderr=subprocess.STDOUT,
-                timeout=60, cwd=tmpdir
-            )
+        cmd = (
+            f'"{XELATEX}" -interaction=nonstopmode '
+            f'-output-directory="{tmpdir}" "{tmp_tex}" '
+            f'> "{log_path}" 2>&1'
+        )
+        retcode = subprocess.call(cmd, shell=True, timeout=60, cwd=tmpdir)
 
         tmp_pdf = os.path.join(tmpdir, f"{base}.pdf")
 

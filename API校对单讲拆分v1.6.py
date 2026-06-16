@@ -617,6 +617,19 @@ class MultiSubjectProofreadApp:
                 if not self.task_interrupt and paper_results:
                     self.auto_export_paper_report(paper_path, paper_results, output_dir)
 
+                # 生成汇总 PDF
+                if not self.task_interrupt and paper_results:
+                    try:
+                        from latex_generator import generate_combined_pdf
+                        pdf_dir = os.path.join(os.path.dirname(output_dir) if output_dir else "output", "校对PDF")
+                        pdf_path = generate_combined_pdf(paper_path, pdf_dir)
+                        if pdf_path:
+                            self.log(f"📄 汇总 PDF：{pdf_path}")
+                        else:
+                            self.log(f"⚠️ 汇总 PDF 生成失败（无可用的校对数据）")
+                    except Exception as e:
+                        self.log(f"⚠️ 汇总 PDF 生成异常：{e}")
+
             if self.task_interrupt:
                 self.log("\n===== 任务已手动中断 =====")
             else:
