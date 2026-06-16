@@ -37,7 +37,7 @@ class TestTextCorrection:
         md = "金刚石中C---C键键长更短。"
         corrections = [{"type": "text", "original": "C---C键", "correction": "C-C键", "reason": "符号错误"}]
         result = build_paracol_content(md, corrections)
-        assert r"\textsuperscript{\textcircled{1}}" in result
+        assert r"\textsuperscript{\textcolor{red}{\textcircled{1}}}" in result
 
     def test_reason_in_right_column(self):
         from latex_generator import build_paracol_content
@@ -69,7 +69,7 @@ class TestRewriteCorrection:
         corrections = [{"type": "rewrite", "original": "碘晶体层内和层间均为分子间作用力，是分子晶体。",
                         "correction": "碘晶体中分子间以范德华力结合。", "reason": "概念混淆"}]
         result = build_paracol_content(md, corrections)
-        assert r"\textsuperscript{\textcircled{1}}" in result
+        assert r"\textsuperscript{\textcolor{red}{\textcircled{1}}}" in result
 
     def test_reason_in_right(self):
         from latex_generator import build_paracol_content

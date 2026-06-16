@@ -16,7 +16,6 @@ _LATEX_SPECIAL = [
     ("&", r"\&"),
     ("%", r"\%"),
     ("$", r"\$"),
-    ("#", r"\#"),
     ("_", r"\_"),
     ("{", r"\{"),
     ("}", r"\}"),
@@ -41,6 +40,20 @@ def _escape_preserve_math(text: str) -> str:
             result.append(part)
         else:
             result.append(_escape_text(part))
+    return "".join(result)
+
+
+def _newline_to_latex(text: str) -> str:
+    """单换行 → \\\\，保护数学模式内的换行"""
+    parts = re.split(r"(\$\$[\s\S]*?\$\$|\$[^$]*?\$)", text)
+    result = []
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("$"):
+            result.append(part)
+        else:
+            result.append(part.replace("\n", r"\\" + "\n"))
     return "".join(result)
 
 
@@ -117,12 +130,11 @@ def _apply_markers(md_content: str, corrections: list[dict]) -> tuple[str, list[
     result = md_content
     for start, end, corr in positioned:
         num = corr["num"]
+        marker = r"\textsuperscript{\textcolor{red}{\textcircled{" + str(num) + "}}}"
         if _in_math(result, start):
             close = _find_math_close(result, end)
-            marker = r"\textsuperscript{\textcircled{" + str(num) + "}}"
             result = result[:close+1] + marker + result[close+1:]
         else:
-            marker = r"\textsuperscript{\textcircled{" + str(num) + "}}"
             result = result[:end] + marker + result[end:]
 
     return result, numbered
@@ -139,6 +151,10 @@ def build_paracol_content(md_content: str, corrections: list[dict]) -> str:
 
     escaped = _escape_preserve_math(md_content)
     escaped = _convert_images(escaped)
+    # 单换行 → LaTeX 换行（双换行仍是段落分隔）
+    escaped = escaped.replace("\n\n", "\n\n")  # 保留段落分隔
+    # 单换行：不在数学模式内的转成 \\
+    escaped = _newline_to_latex(escaped)
 
     marked, numbered = _apply_markers(escaped, corrections)
 
