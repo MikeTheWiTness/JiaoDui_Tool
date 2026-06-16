@@ -172,7 +172,7 @@ def _apply_markers(md_content: str, corrections: list[dict]) -> tuple[str, list[
 
 def _format_right_entry(corr: dict) -> str:
     num = corr["num"]
-    reason = _escape_text(corr.get("reason", ""))
+    reason = _escape_preserve_math(corr.get("reason", ""))
     return f"\\textcircled{{{num}}} {reason}"
 
 

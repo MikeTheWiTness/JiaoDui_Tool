@@ -658,11 +658,19 @@ class MultiSubjectProofreadApp:
                         err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
                         self.log(f"❌ {q_name} {task_type}校对失败：{err_detail}")
                     else:
+                        # 保存原始 Markdown 校对结果到题目目录
+                        md_path = os.path.join(q_dir, "_校对报告.md")
+                        try:
+                            with open(md_path, "w", encoding="utf-8") as f:
+                                f.write(res)
+                        except Exception:
+                            pass
+
                         json_saved = _save_proofread_json(res, q_dir)
                         if json_saved:
-                            self.log(f"✅ {q_name} {task_type}校对完成（JSON 已保存）")
+                            self.log(f"✅ {q_name} {task_type}校对完成")
                         else:
-                            self.log(f"⚠️ {q_name} {task_type}校对完成（JSON 解析失败，仅保留 Markdown）")
+                            self.log(f"⚠️ {q_name} {task_type} Markdown 解析失败（原始结果已保存至 _校对报告.md）")
 
                     time.sleep(QUESTION_INTERVAL)
 
