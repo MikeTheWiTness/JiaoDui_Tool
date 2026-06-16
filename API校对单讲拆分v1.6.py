@@ -14,6 +14,64 @@ except ImportError:
     _PYDANTIC_OK = False
 import subject_config
 
+
+def _extract_json(text: str) -> dict | None:
+    """从 LLM 返回文本中提取 JSON 对象。
+
+    处理三种情况：
+    1. 裸 JSON 对象 {...}
+    2. Markdown 代码块包裹的 JSON ```json ... ```
+    3. 文本中嵌入的 JSON 对象
+    """
+    if not text:
+        return None
+
+    text = text.strip()
+
+    # 尝试 1：直接解析
+    if text.startswith("{"):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+    # 尝试 2：提取 ```json ... ``` 代码块
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if m:
+        block = m.group(1).strip()
+        if block.startswith("{"):
+            try:
+                return json.loads(block)
+            except json.JSONDecodeError:
+                pass
+
+    # 尝试 3：查找第一个 { 到最后一个 } 之间的内容
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def _save_proofread_json(res: str, q_dir: str):
+    """尝试从 LLM 返回结果中提取 JSON 并保存为 _校对数据.json"""
+    data = _extract_json(res)
+    if data is None:
+        return False
+
+    json_path = os.path.join(q_dir, "_校对数据.json")
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
 def _app_dir():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
@@ -548,7 +606,11 @@ class MultiSubjectProofreadApp:
                         err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
                         self.log(f"❌ {q_name} {task_type}校对失败：{err_detail}")
                     else:
-                        self.log(f"✅ {q_name} {task_type}校对完成")
+                        json_saved = _save_proofread_json(res, q_dir)
+                        if json_saved:
+                            self.log(f"✅ {q_name} {task_type}校对完成（JSON 已保存）")
+                        else:
+                            self.log(f"⚠️ {q_name} {task_type}校对完成（JSON 解析失败，仅保留 Markdown）")
 
                     time.sleep(QUESTION_INTERVAL)
 

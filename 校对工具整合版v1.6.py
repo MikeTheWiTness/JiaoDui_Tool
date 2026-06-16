@@ -21,6 +21,48 @@ except ImportError:
 import subject_config
 
 # ========================= 路径工具 =========================
+def _extract_json(text: str):
+    """从 LLM 返回文本中提取 JSON 对象"""
+    if not text:
+        return None
+    text = text.strip()
+    if text.startswith("{"):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if m:
+        block = m.group(1).strip()
+        if block.startswith("{"):
+            try:
+                return json.loads(block)
+            except json.JSONDecodeError:
+                pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _save_proofread_json(res: str, q_dir: str):
+    """尝试从 LLM 返回结果中提取 JSON 并保存为 _校对数据.json"""
+    data = _extract_json(res)
+    if data is None:
+        return False
+    json_path = os.path.join(q_dir, "_校对数据.json")
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
 def _app_dir():
     """exe 模式返回 exe 所在目录，否则返回脚本所在目录"""
     if getattr(sys, 'frozen', False):
@@ -1373,7 +1415,11 @@ class IntegratedApp:
                         err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
                         log(f"   ❌ {q_name} 校对失败：{err_detail}")
                     else:
-                        log(f"   ✅ {q_name} 校对完成")
+                        json_saved = _save_proofread_json(res, q_dir)
+                        if json_saved:
+                            log(f"   ✅ {q_name} 校对完成（JSON 已保存）")
+                        else:
+                            log(f"   ⚠️ {q_name} 校对完成（JSON 解析失败，仅保留 Markdown）")
                     time.sleep(QUESTION_INTERVAL)
 
                 # 自动导出报告
