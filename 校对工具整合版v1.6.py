@@ -876,6 +876,9 @@ class IntegratedApp:
         self.clean_enabled = tk.BooleanVar(value=True)
         self.knowledge_enabled = tk.BooleanVar(value=True)
 
+        # PDF 输出选项
+        self.generate_pdf = tk.BooleanVar(value=True)
+
         # 文件列表（转换用）
         self.file_list = []
         # 校对清单
@@ -953,6 +956,9 @@ class IntegratedApp:
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
         ttk.Radiobutton(f1, text="仅校对", variable=self.exec_mode, value="仅校对",
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
+        ttk.Separator(f1, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        ttk.Checkbutton(f1, text="生成 LaTeX PDF 校对报告",
+                        variable=self.generate_pdf).pack(side=tk.LEFT, padx=4)
 
         # --- 第2行：学段+学科选择 ---
         f_subj = ttk.Frame(self.root, padding=(10, 0, 10, 5))
@@ -1446,27 +1452,30 @@ class IntegratedApp:
                         err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
                         log(f"   ❌ {q_name} 校对失败：{err_detail}")
                     else:
-                        # 保存原始 Markdown 校对结果到题目目录
-                        md_path = os.path.join(q_dir, "_校对报告.md")
-                        try:
-                            with open(md_path, "w", encoding="utf-8") as f:
-                                f.write(res)
-                        except Exception:
-                            pass
+                        if self.generate_pdf.get():
+                            # PDF 模式：保存原始 Markdown + JSON + 最终生成 PDF
+                            md_path = os.path.join(q_dir, "_校对报告.md")
+                            try:
+                                with open(md_path, "w", encoding="utf-8") as f:
+                                    f.write(res)
+                            except Exception:
+                                pass
 
-                        json_saved = _save_proofread_json(res, q_dir)
-                        if json_saved:
-                            log(f"   ✅ {q_name} 校对完成")
+                            json_saved = _save_proofread_json(res, q_dir)
+                            if json_saved:
+                                log(f"   ✅ {q_name} 校对完成")
+                            else:
+                                log(f"   ⚠️ {q_name} Markdown 解析失败（原始结果已保存至 _校对报告.md）")
                         else:
-                            log(f"   ⚠️ {q_name} Markdown 解析失败（原始结果已保存至 _校对报告.md）")
+                            log(f"   ✅ {q_name} 校对完成")
                     time.sleep(QUESTION_INTERVAL)
 
                 # 自动导出报告
                 if not self.task_interrupt and paper_results:
                     self._export_paper_report(paper_name, paper_results, report_root)
 
-                # 生成汇总 PDF
-                if not self.task_interrupt and paper_results:
+                # 生成汇总 PDF（仅在 PDF 模式下）
+                if self.generate_pdf.get() and not self.task_interrupt and paper_results:
                     try:
                         from latex_generator import generate_combined_pdf
                         pdf_dir = os.path.join("output", "校对PDF")
