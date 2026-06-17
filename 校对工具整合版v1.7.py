@@ -361,6 +361,24 @@ def fix_floating_images(md_file):
     return False
 
 
+def normalize_option_spacing(md_file):
+    """压缩 Pandoc 转换产生的多余空格。
+
+    Word 表格列宽被 Pandoc 转为大量空格（如 20-30 个连续空格），
+    将 4 个及以上的连续空格统一压缩为 2 个空格。
+    """
+    import re as _re
+    with open(md_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    new_content = _re.sub(r" {4,}", "  ", content)
+    if new_content != content:
+        with open(md_file, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        return True
+    return False
+
+
 def clean_md_file(md_file):
     try:
         with open(md_file, 'r', encoding='utf-8') as f:
@@ -1342,13 +1360,15 @@ class IntegratedApp:
             # 2. 后处理
             if source == "讲义":
                 fix_latex_escapes(raw_md)
-                # 修复浮动图片错位：A. ![test] 行且 B/C/D 无图时，图片移到独立行
-                fix_floating_images(raw_md)
                 if self.clean_enabled.get():
                     if clean_md_file(raw_md):
                         log("   ✅ 表格清理完成")
                     else:
                         log("   ⚠️ 表格清理失败")
+                # 修复浮动图片错位（须在去管道符之后）
+                fix_floating_images(raw_md)
+                # 压缩多余空格（须在去管道符之后）
+                normalize_option_spacing(raw_md)
             else:
                 post_process_md_zw(raw_md)
 
