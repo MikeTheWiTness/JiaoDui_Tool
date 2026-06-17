@@ -7,7 +7,7 @@ import pytest
 def _load_parser():
     spec = importlib.util.spec_from_file_location(
         "proofread_gui",
-        os.path.join(os.path.dirname(__file__), "..", "API校对单讲拆分v1.6.py")
+        os.path.join(os.path.dirname(__file__), "..", "API校对单讲拆分v1.7.py")
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

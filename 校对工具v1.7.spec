@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['校对工具整合版v1.6.py'],
+    ['校对工具整合版v1.7.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -24,7 +24,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='校对工具v1.6',
+    name='校对工具v1.7',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -43,5 +43,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='校对工具v1.6',
+    name='校对工具v1.7',
 )

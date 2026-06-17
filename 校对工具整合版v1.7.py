@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-多学科题目处理工具 v1.6 —— 整合版
+多学科题目处理工具 v1.7 —— 整合版
   模式：试卷模式 / 讲义模式
   流程：完整流程 / 仅拆分 / 仅校对
   学科：语数外理化生政史地（各学科独立提示词）
@@ -861,7 +861,7 @@ def collect_paper_dirs(base_path):
 class IntegratedApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("多学科题目处理工具 v1.6（整合版）")
+        self.root.title("多学科题目处理工具 v1.7（整合版）")
         self.root.geometry("1050x750")
         self.root.minsize(900, 650)
 

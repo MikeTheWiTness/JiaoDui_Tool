@@ -1,4 +1,4 @@
-# 校对 v1.6 — K-12 Multi-Subject Content Proofreading Pipeline
+# 校对 v1.7 — K-12 Multi-Subject Content Proofreading Pipeline
 
 A three-stage pipeline (Convert → Split → Proofread) for K-12 educational content across 24 subject-level combinations.
 
