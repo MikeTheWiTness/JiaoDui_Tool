@@ -48,24 +48,6 @@ def _escape_preserve_math(text: str) -> str:
     return "".join(result)
 
 
-def _convert_md_formatting(text: str) -> str:
-    """Markdown 粗/斜体 → LaTeX。保护数学模式"""
-    parts = re.split(r"(\$\$[\s\S]*?\$\$|\$[^$]*?\$)", text)
-    result = []
-    for part in parts:
-        if not part:
-            continue
-        if part.startswith("$"):
-            result.append(part)
-        else:
-            # **bold** → \textbf{bold}
-            part = re.sub(r"\*\*(.+?)\*\*", r"\\textbf{\1}", part)
-            # *italic* → \textit{italic}（注意不匹配 ** 和数学乘号）
-            part = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"\\textit{\1}", part)
-            result.append(part)
-    return "".join(result)
-
-
 def _newline_to_latex(text: str) -> str:
     """单换行 → \\\\，保护数学模式内的换行"""
     parts = re.split(r"(\$\$[\s\S]*?\$\$|\$[^$]*?\$)", text)
@@ -108,9 +90,32 @@ def _extract_images(text: str) -> tuple[str, dict[str, str]]:
     return text, img_map
 
 
-def _restore_images(text: str, img_map: dict[str, str]) -> str:
-    """将占位符替换回 LaTeX 图片代码"""
-    for key, latex in img_map.items():
+def _extract_md_formatting(text: str, placeholder_map: dict[str, str]) -> str:
+    """提取 Markdown 粗/斜体为占位符，替换为 LaTeX 命令"""
+    global _IMG_COUNTER
+
+    def _bold_repl(m):
+        global _IMG_COUNTER
+        _IMG_COUNTER += 1
+        key = f"FMTBOLD{_IMG_COUNTER}"
+        placeholder_map[key] = r"\textbf{" + m.group(1) + "}"
+        return key
+
+    def _italic_repl(m):
+        global _IMG_COUNTER
+        _IMG_COUNTER += 1
+        key = f"FMTIT{_IMG_COUNTER}"
+        placeholder_map[key] = r"\textit{" + m.group(1) + "}"
+        return key
+
+    text = re.sub(r"\*\*(.+?)\*\*", _bold_repl, text)
+    text = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", _italic_repl, text)
+    return text
+
+
+def _restore_placeholders(text: str, placeholder_map: dict[str, str]) -> str:
+    """将所有占位符替换回 LaTeX 代码"""
+    for key, latex in placeholder_map.items():
         text = text.replace(key, latex)
     return text
 
@@ -207,14 +212,12 @@ def _format_right_entry(corr: dict) -> str:
 def build_paracol_content(md_content: str, corrections: list[dict]) -> str:
     corrections = corrections or []
 
-    # 先提取图片为占位符，转义后再替换（避免 LaTeX 命令被 escape）
-    md_with_placeholders, img_map = _extract_images(md_content)
-    escaped = _escape_preserve_math(md_with_placeholders)
-    escaped = _restore_images(escaped, img_map)
-    # Markdown 标题 # → 粗体文字
-    escaped = re.sub(r'^#{1,4}\s+(.+)', r'\\textbf{\1}', escaped, flags=re.MULTILINE)
-    # Markdown 粗/斜体 → LaTeX
-    escaped = _convert_md_formatting(escaped)
+    # 提取图片 + 粗斜体为占位符，escape 后再恢复
+    md_processed, placeholder_map = _extract_images(md_content)
+    md_processed = _extract_md_formatting(md_processed, placeholder_map)
+    md_processed = re.sub(r'^#{1,4}\s+(.+)', r'\\textbf{\1}', md_processed, flags=re.MULTILINE)
+    escaped = _escape_preserve_math(md_processed)
+    escaped = _restore_placeholders(escaped, placeholder_map)
     # 单换行 → LaTeX 换行
     escaped = _newline_to_latex(escaped)
 
