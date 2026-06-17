@@ -48,6 +48,24 @@ def _escape_preserve_math(text: str) -> str:
     return "".join(result)
 
 
+def _convert_md_formatting(text: str) -> str:
+    """Markdown 粗/斜体 → LaTeX。保护数学模式"""
+    parts = re.split(r"(\$\$[\s\S]*?\$\$|\$[^$]*?\$)", text)
+    result = []
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("$"):
+            result.append(part)
+        else:
+            # **bold** → \textbf{bold}
+            part = re.sub(r"\*\*(.+?)\*\*", r"\\textbf{\1}", part)
+            # *italic* → \textit{italic}（注意不匹配 ** 和数学乘号）
+            part = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"\\textit{\1}", part)
+            result.append(part)
+    return "".join(result)
+
+
 def _newline_to_latex(text: str) -> str:
     """单换行 → \\\\，保护数学模式内的换行"""
     parts = re.split(r"(\$\$[\s\S]*?\$\$|\$[^$]*?\$)", text)
@@ -175,6 +193,14 @@ def _apply_markers(md_content: str, corrections: list[dict]) -> tuple[str, list[
 def _format_right_entry(corr: dict) -> str:
     num = corr["num"]
     reason = _escape_preserve_math(corr.get("reason", ""))
+    corrected = _escape_preserve_math(corr.get("correction", ""))
+    ctype = corr.get("type", "text")
+    if ctype == "text":
+        return f"\\textcircled{{{num}}} 改为：\\texttt{{{corrected}}} \\\\ \\textit{{{reason}}}"
+    elif ctype == "rewrite":
+        return f"\\textcircled{{{num}}} 重写为：\\texttt{{{corrected}}} \\\\ \\textit{{{reason}}}"
+    elif ctype == "region":
+        return f"\\textcircled{{{num}}} 修改：\\texttt{{{corrected}}} \\\\ \\textit{{{reason}}}"
     return f"\\textcircled{{{num}}} {reason}"
 
 
@@ -185,8 +211,10 @@ def build_paracol_content(md_content: str, corrections: list[dict]) -> str:
     md_with_placeholders, img_map = _extract_images(md_content)
     escaped = _escape_preserve_math(md_with_placeholders)
     escaped = _restore_images(escaped, img_map)
-    # Markdown 标题 # → 粗体文字（匹配行首 # 后跟空格、文字，到行尾）
+    # Markdown 标题 # → 粗体文字
     escaped = re.sub(r'^#{1,4}\s+(.+)', r'\\textbf{\1}', escaped, flags=re.MULTILINE)
+    # Markdown 粗/斜体 → LaTeX
+    escaped = _convert_md_formatting(escaped)
     # 单换行 → LaTeX 换行
     escaped = _newline_to_latex(escaped)
 
