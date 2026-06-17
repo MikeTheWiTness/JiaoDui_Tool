@@ -1,0 +1,77 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+% === 字体设置 ===
+\setCJKmainfont{SimSun}
+\setmainfont{Times New Roman}
+
+% === 宏包 ===
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[version=4]{mhchem}
+\usepackage{graphicx}
+\usepackage{paracol}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{geometry}
+
+% === 页面设置 ===
+\geometry{
+  a4paper,
+  left=1.5cm,
+  right=1.5cm,
+  top=2cm,
+  bottom=2cm,
+  columnsep=1cm
+}
+
+% === 内部辅助：计算 paracol 列宽 ===
+\newlength{\colwidthinner}
+\newcommand{\calccolwidth}{%
+  \setlength{\colwidthinner}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+}
+
+% 右栏：修改建议框
+\newcommand{\correctionbox}[1]{%
+  \calccolwidth
+  \colorbox{blue!8}{\parbox{\colwidthinner}{#1}}%
+}
+
+% === Pandoc 兼容：非标准 LaTeX 命令 ===
+\newcommand{\lt}{{<}}
+\newcommand{\gt}{{>}}
+
+% === 页眉页脚 ===
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{校对报告}
+\fancyhead[R]{\leftmark}
+\fancyfoot[C]{\thepage}
+
+\begin{document}
+
+\title{test}
+\author{}
+\date{}
+\maketitle
+
+\begin{paracol}{2}
+
+**一本班1**\\
+真空中固定有两个点电荷，负电荷$Q_{1}$位于坐标原点处，正电荷$Q_{2}$位于$x$轴上，$Q_{2}$的电荷量大小为$Q_{1}$的$8$倍。若这两点电荷在$x$轴正半轴的$x=x_{0}$处产生的合电场强度为$0$，则$Q_{1}$、$Q_{2}$相距​（ ）\\
+A.       $\sqrt{2}x_{0}$      B.       $(2\sqrt{2}-1)x_{0}$      C.       $2\sqrt{2}x_{0}$      D.       $(2\sqrt{2}+1)x_{0}$\\
+答案:\\
+B\\
+解答：                             设$Q_{1}=-Q$，$Q_{2}=8Q$，$Q_{1}$与$Q_{2}$相距$L$，\\
+两点电荷在$x$轴正半轴的$x=x_{0}$处产生的合电场强度为$0$，由于$Q_{1} \lt Q_{2}$，故该处距离$Q_{1}$近，距离$Q_{2}$远，故$Q_{2}$应放在$x$轴负半轴\\
+该处合场强为零，则两点电荷在该处场强大小相等，方向相反，故有\\
+$\frac{k\cdot 8Q}{(L+{x}_{0}{)}^{2}}=\frac{k\cdot Q}{{x}_{0}^{2}}$\\
+$L=(2\sqrt{2}-1)x_0$，故$\mathrm{B}$正确，$\mathrm{ACD}$错误。\\
+故选：$\mathrm{B}$。\\
+
+\switchcolumn
+
+\switchcolumn*
+
+\end{paracol}
+
+\end{document}

@@ -254,8 +254,14 @@ def generate_combined_pdf(lecture_dir: str, pdf_output_dir: str | None = None) -
     if not os.path.isdir(lecture_dir):
         return None
 
+    def _sort_key(entry):
+        nums = re.findall(r'\d+', entry)
+        return (int(nums[0]) if nums else 9999, entry)
+
     subdirs = []
-    for entry in sorted(os.listdir(lecture_dir)):
+    for entry in sorted(os.listdir(lecture_dir), key=_sort_key):
+        if entry in ("知识",):  # 跳过知识
+            continue
         full = os.path.join(lecture_dir, entry)
         if os.path.isdir(full) and not entry.startswith("_"):
             subdirs.append(full)
