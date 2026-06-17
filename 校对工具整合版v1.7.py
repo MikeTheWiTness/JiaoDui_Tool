@@ -315,6 +315,52 @@ def comprehensive_clean(md_content):
     text = '\n'.join(l.strip() for l in text.split('\n'))
     return text.strip()
 
+def fix_floating_images(md_file):
+    """修复 Pandoc 浮动图片错位到选项 A 的 bug。
+
+    模式：A. ![test](...){...}   选项文字
+    条件：B/C/D 行不含 ![]( 图片
+    修复：图片移到独立行，放在 A 前面
+    """
+    with open(md_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    lines = content.split("\n")
+    fixed = False
+
+    for i, line in enumerate(lines):
+        # 匹配 A. ![test] 模式（Pandoc 默认 alt 文本为 "test"）
+        m = re.match(r"^A\.\s*!\[test\]\(([^)]+)\)\s*(\{[^}]*\})?\s*(.*)", line)
+        if not m:
+            continue
+
+        img_path = m.group(1)
+        img_attrs = m.group(2) or ""
+        option_text = m.group(3)
+
+        # 检查 B/C/D 行是否有图片（如果有则是合法图形选择题，跳过）
+        has_img_in_options = False
+        for j in range(i, min(i + 10, len(lines))):
+            if re.match(r"^[B-D]\.\s*!\[", lines[j]):
+                has_img_in_options = True
+                break
+
+        if has_img_in_options:
+            continue
+
+        # 修复：图片独立成行，选项 A 恢复正常
+        img_line = f"![]({img_path}){img_attrs}"
+        lines[i] = f"A.                                  {option_text}" if option_text else line
+        lines.insert(i, img_line)
+        fixed = True
+
+    if fixed:
+        with open(md_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        return True
+    return False
+
+
 def clean_md_file(md_file):
     try:
         with open(md_file, 'r', encoding='utf-8') as f:
@@ -1296,6 +1342,8 @@ class IntegratedApp:
             # 2. 后处理
             if source == "讲义":
                 fix_latex_escapes(raw_md)
+                # 修复浮动图片错位：A. ![test] 行且 B/C/D 无图时，图片移到独立行
+                fix_floating_images(raw_md)
                 if self.clean_enabled.get():
                     if clean_md_file(raw_md):
                         log("   ✅ 表格清理完成")
