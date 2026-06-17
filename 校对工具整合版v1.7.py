@@ -798,12 +798,17 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, t
             resp.raise_for_status()
             choice = resp.json()["choices"][0]
 
-            # 处理 tool calls 循环（理科最多5轮，语文最多10轮——网页搜索可能需要多次尝试）
-            max_loops = 10 if subject == "语文" else 5
+            # 处理 tool calls 循环（语文10轮——网页搜索；理科20轮——复杂公式多步验证）
+            max_loops = 10 if subject == "语文" else 20
             loop = 0
             while choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
                 if loop >= max_loops:
-                    return f"**工具调用超限：** 模型进行了超过{max_loops}轮工具调用，已中止。"
+                    log(f"   ⚠️ 工具调用超限（{max_loops}轮），自动重试无工具模式...")
+                    # 重新调用，不带工具
+                    payload_no_tools = {**payload, "tools": None, "tool_choice": None}
+                    resp = requests.post(chat_url, json=payload_no_tools, headers=headers, timeout=TIME_OUT)
+                    resp.raise_for_status()
+                    return resp.json()["choices"][0]["message"]["content"]
                 # 将 assistant 消息（含 tool_calls）加入历史
                 messages.append(choice["message"])
                 for tc in choice["message"]["tool_calls"]:
