@@ -57,7 +57,24 @@ python API校对单讲拆分v1.7.py
 
 ## 版本历史
 
-### v1.7 — LaTeX PDF 双栏校对报告 + Markdown 结构化输出
+### v1.7 — LaTeX PDF 双栏校对报告 + Markdown 结构化输出（2026-06）
+
+- **LaTeX PDF 校对报告**：双栏对照排版（左栏原题 + 红色圈号标记，右栏修改建议）
+  - 数学公式完整渲染（`\dfrac` 分数、CJK 自动 `\text{}`、`\ce{}` 化学式）
+  - `\frac` 自动升级为 `\dfrac` 清晰可读
+  - 图片自动嵌入，Markdown 粗/斜体自动转 LaTeX
+  - 宋体（SimSun）+ Times New Roman，中文兼容
+  - 复选框可选开关 PDF 生成模式
+- **Markdown 结构化校对输出**：全学科统一 `### 修改 N` 格式
+  - LLM 返回反引号包裹的修改项，零转义冲突
+  - `_parse_proofread_md` 解析器提取 `_校对数据.json`
+  - 三种修改类型：`text`（文字替换）、`rewrite`（整段重写）、`region`（图片/区域）
+- **新增模块**：`latex_generator.py`、`pdf_compiler.py`、`templates/proofread_template.tex`
+- **工具调用**：理科上限 20 轮 + 超限自动降级无工具重试
+- **浮空图片修复**：Pandoc 浮动图片错位到选项 A 自动修正
+- **空格压缩**：Word 表格列宽产生的多余空格全局清理
+- **版本号升级**：v1.6 → v1.7（文件名、GUI 标题、spec 全部更新）
+
 ### v1.6 — 学段分级 + 版块拆分模式 + 多学科支持
 
 - 重构配置目录：`subjects/{小学/初中/高中}/{学科}/config.json`，共 24 个配置文件
@@ -101,7 +118,11 @@ python API校对单讲拆分v1.7.py
 │       └── {学科}/config.json  # 提示词 + 拆分规则
 ├── sympy_tools/                # 符号计算工具包
 │   ├── tools.py, templates.py, sandbox.py, safety.py
-├── tests/test_sympy_tools.py
+├── latex_generator.py           # LaTeX .tex 生成器
+├── pdf_compiler.py              # XeLaTeX PDF 编译
+├── templates/
+│   └── proofread_template.tex   # 双栏校对排版模板
+├── tests/                       # 测试套件（171 个测试）
 ├── .env                           # API 配置
 ├── CLAUDE.md
 └── output/
@@ -151,11 +172,12 @@ MODEL_NAME=doubao-seed-2-0-pro-260215
 ```
 .docx 文件
   → Pandoc → 原始 .md（+ _images/media/）
-  → LaTeX 转义修复 / 后处理
+  → LaTeX 转义修复 / 后处理（浮空图片修正 + 多余空格压缩）
   → 表格清理（讲义）或公式格式修正（试卷）
   → 拆分：
       title 模式   → 第N题/第N题.md + images/ + 知识/
       section 模式 → 板块N/板块N.md + images/
   → AI 校对（学科+学段提示词 + 符号计算工具 + reasoning_effort=high）
-  → _校对报告.md
+  → 结构化数据（_校对数据.json） + 原始报告（_校对报告.md）
+  → LaTeX 双栏排版 → 汇总 PDF（可选）
 ```
