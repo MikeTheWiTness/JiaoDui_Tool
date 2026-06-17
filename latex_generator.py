@@ -40,6 +40,8 @@ def _escape_preserve_math(text: str) -> str:
             # 数学模式内：CJK 字符用 \text{} 包裹
             part = re.sub(r'([一-鿿㐀-䶿豈-﫿]+)',
                           r'\\text{\1}', part)
+            # 行内分数 → display-style 分数（更清晰可读）
+            part = part.replace(r"\frac", r"\dfrac")
         else:
             part = _escape_text(part)
         result.append(part)

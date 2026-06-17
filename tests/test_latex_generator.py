@@ -92,6 +92,27 @@ class TestRegionCorrection:
         assert "标注错误" in result
 
 
+class TestFractionUpgrade:
+    def test_frac_becomes_dfrac(self):
+        from latex_generator import build_paracol_content
+        md = "公式 $\\frac{1}{2}$ 测试。"
+        result = build_paracol_content(md, [])
+        assert r"\dfrac" in result
+        assert r"\frac" not in result
+
+    def test_display_math_also_upgraded(self):
+        from latex_generator import build_paracol_content
+        md = "$$\\frac{a}{b}$$"
+        result = build_paracol_content(md, [])
+        assert r"\dfrac" in result
+
+    def test_non_frac_unchanged(self):
+        from latex_generator import build_paracol_content
+        md = "$x^2 + y^2 = z^2$"
+        result = build_paracol_content(md, [])
+        assert "$x^2 + y^2 = z^2$" in result
+
+
 class TestLatexEscaping:
     def test_ampersand_escaped(self):
         from latex_generator import build_paracol_content
