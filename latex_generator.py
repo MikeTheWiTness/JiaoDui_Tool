@@ -2,11 +2,14 @@
 LaTeX .tex 生成模块
 读取结构化校对 JSON + 原始 .md → 生成 paracol 双栏 .tex 文件。
 
-左栏：原文 + 编号标记（\corrmark{文字}{编号}），右栏：编号 + 原因说明。
+左栏：原文 + 编号标记（\\corrmark{文字}{编号}），右栏：编号 + 原因说明。
 """
 import json
+import itertools
 import os
 import re
+
+_counter = itertools.count(1)
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 TEMPLATE_FILE = os.path.join(TEMPLATE_DIR, "proofread_template.tex")
@@ -62,18 +65,12 @@ def _newline_to_latex(text: str) -> str:
     return "".join(result)
 
 
-_IMG_COUNTER = 0
-
-
 def _extract_images(text: str) -> tuple[str, dict[str, str]]:
     """提取 Markdown 图片为占位符，返回 (处理后文本, {占位符: LaTeX代码})"""
-    global _IMG_COUNTER
     img_map = {}
 
     def _repl(m):
-        global _IMG_COUNTER
-        _IMG_COUNTER += 1
-        key = f"IMAGEPLACEHOLDER{_IMG_COUNTER}"
+        key = f"IMAGEPLACEHOLDER{next(_counter)}"
         path = m.group(1)
         img_map[key] = (
             "\\\\\n\\includegraphics[width=\\linewidth,keepaspectratio]{" + path + "}"
@@ -92,19 +89,14 @@ def _extract_images(text: str) -> tuple[str, dict[str, str]]:
 
 def _extract_md_formatting(text: str, placeholder_map: dict[str, str]) -> str:
     """提取 Markdown 粗/斜体为占位符，替换为 LaTeX 命令"""
-    global _IMG_COUNTER
 
     def _bold_repl(m):
-        global _IMG_COUNTER
-        _IMG_COUNTER += 1
-        key = f"FMTBOLD{_IMG_COUNTER}"
+        key = f"FMTBOLD{next(_counter)}"
         placeholder_map[key] = r"\textbf{" + m.group(1) + "}"
         return key
 
     def _italic_repl(m):
-        global _IMG_COUNTER
-        _IMG_COUNTER += 1
-        key = f"FMTIT{_IMG_COUNTER}"
+        key = f"FMTIT{next(_counter)}"
         placeholder_map[key] = r"\textit{" + m.group(1) + "}"
         return key
 
@@ -156,6 +148,15 @@ def _find_math_close(text: str, start: int) -> int:
     return len(text)
 
 
+def _md_key_to_latex(text: str) -> str:
+    """将 Markdown 格式的搜索键转为 LaTeX 形式，用于在已处理内容中 fallback 搜索。"""
+    # 粗体 **text** → \textbf{text}
+    text = re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', text)
+    # 斜体 *text* → \textit{text}
+    text = re.sub(r'(?<!\*)\*([^*\n]+?)\*(?!\*)', r'\\textit{\1}', text)
+    return text
+
+
 def _apply_markers(md_content: str, corrections: list[dict]) -> tuple[str, list[dict]]:
     """在原文错误位置后插入 \textsuperscript{\textcircled{N}} 标记。"""
     if not corrections:
@@ -177,6 +178,12 @@ def _apply_markers(md_content: str, corrections: list[dict]) -> tuple[str, list[
             idxn = norm.find(norm_key)
             if idxn >= 0:
                 idx = _norm_pos(md_content, idxn)
+        if idx < 0:
+            latex_key = _md_key_to_latex(search_key)
+            if latex_key != search_key:
+                idx = md_content.find(latex_key)
+                if idx >= 0:
+                    search_key = latex_key
         if idx >= 0:
             positioned.append((idx, idx + len(search_key), corr))
 
