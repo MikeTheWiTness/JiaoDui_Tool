@@ -525,12 +525,14 @@ class TestDimensionalAnalysisTool:
         assert result["success"] is True
 
     def test_check_inconsistent_units(self):
-        """千克 = 米 量纲不一致"""
+        """check_consistency 对量纲不一致的表达式不崩溃"""
         result = self._run(
             expression="kilogram = meter",
             operation="check_consistency",
         )
         assert result["success"] is True
+        # kilogram != meter 是量纲不一致，工具应返回 consistent == False
+        assert result.get("result", {}).get("consistent") is False
 
     def test_convert_mps_to_kmph(self):
         """5 m/s → 18 km/h"""

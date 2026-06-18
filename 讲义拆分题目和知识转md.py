@@ -112,6 +112,16 @@ def fix_latex_escapes(md_file):
     content = content.replace(r'\left\[', r'\left[')
     content = content.replace(r'\right\]', r'\right]')
 
+    # 7.5. 修复非数学内容的独立 \[ 和 \]（Pandoc 转义的方括号）
+    def _fix_escaped_brackets(content):
+        def _repl(m):
+            inner = m.group(1)
+            if re.search(r'[\$\\\^_]', inner):
+                return m.group(0)
+            return '[' + inner + ']'
+        return re.sub(r'\\\[([^\]]*?)\\\]', _repl, content)
+    content = _fix_escaped_brackets(content)
+
     # 8. 修复其他常见的单反斜杠转义字符（不影响 LaTeX 命令）
     single_escapes = [
         (r'\^', '^'),   # 上标符

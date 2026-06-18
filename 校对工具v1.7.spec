@@ -7,9 +7,14 @@ a = Analysis(
     binaries=[],
     datas=[
         ('subjects', 'subjects'),
-        ('.env', '.'),
+        ('templates', 'templates'),
     ],
-    hiddenimports=['sympy', 'sympy_tools', 'sympy_tools.tools', 'sympy_tools.templates', 'sympy_tools.sandbox', 'sympy_tools.safety', 'pydantic', 'langchain_core', 'langchain_core.tools'],
+    hiddenimports=[
+        'sympy', 'sympy_tools', 'sympy_tools.tools', 'sympy_tools.templates',
+        'sympy_tools.sandbox', 'sympy_tools.safety',
+        'web_tools', 'latex_generator', 'pdf_compiler',
+        'pydantic', 'langchain_core', 'langchain_core.tools',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

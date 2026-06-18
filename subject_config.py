@@ -10,7 +10,9 @@
   - 试卷拆分规则（exam_split）
 """
 
-import os, re, json, sys
+import os, re, json, sys, logging
+
+_log = logging.getLogger(__name__)
 
 
 def _app_dir():
@@ -137,13 +139,13 @@ def get_lecture_patterns(subject, level=None):
             full_pat = r'^\*\*' + pat + r'\*\*.*$'
             wrapped.append(re.compile(full_pat))
         except re.error:
-            print(f"[subject_config] 无效正则（{subject}/{level or '默认'} wrapped）: {pat!r}")
+            _log.warning("[subject_config] 无效正则（%s/%s wrapped）: %r", subject, level or '默认', pat)
     unwrapped = []
     for pat in cfg["lecture_unwrapped_patterns"]:
         try:
             unwrapped.append(re.compile(pat))
         except re.error:
-            print(f"[subject_config] 无效正则（{subject}/{level or '默认'} unwrapped）: {pat!r}")
+            _log.warning("[subject_config] 无效正则（%s/%s unwrapped）: %r", subject, level or '默认', pat)
     return wrapped, unwrapped
 
 

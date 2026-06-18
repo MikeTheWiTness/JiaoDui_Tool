@@ -37,7 +37,7 @@ class TestTextCorrection:
         md = "金刚石中C---C键键长更短。"
         corrections = [{"type": "text", "original": "C---C键", "correction": "C-C键", "reason": "符号错误"}]
         result = build_paracol_content(md, corrections)
-        assert r"\textsuperscript{\textcolor{red}{\textcircled{1}}}" in result
+        assert r"\textsuperscript{\textcolor{red}{\redcircled{1}}}" in result
 
     def test_reason_in_right_column(self):
         from latex_generator import build_paracol_content
@@ -46,7 +46,7 @@ class TestTextCorrection:
         corrections = [{"type": "text", "original": "C---C键", "correction": "C-C键", "reason": "符号错误"}]
         result = build_paracol_content(md, corrections)
         assert "符号错误" in result
-        assert r"\textcircled{1}" in result
+        assert r"\redcircled{1}" in result
 
     def test_multiple_markers(self):
         from latex_generator import build_paracol_content
@@ -57,8 +57,8 @@ class TestTextCorrection:
             {"type": "text", "original": "ma", "correction": "m a", "reason": "缺空格"},
         ]
         result = build_paracol_content(md, corrections)
-        assert r"\textcircled{1}" in result
-        assert r"\textcircled{2}" in result
+        assert r"\redcircled{1}" in result
+        assert r"\redcircled{2}" in result
 
 
 class TestRewriteCorrection:
@@ -69,7 +69,7 @@ class TestRewriteCorrection:
         corrections = [{"type": "rewrite", "original": "碘晶体层内和层间均为分子间作用力，是分子晶体。",
                         "correction": "碘晶体中分子间以范德华力结合。", "reason": "概念混淆"}]
         result = build_paracol_content(md, corrections)
-        assert r"\textsuperscript{\textcolor{red}{\textcircled{1}}}" in result
+        assert r"\textsuperscript{\textcolor{red}{\redcircled{1}}}" in result
 
     def test_reason_in_right(self):
         from latex_generator import build_paracol_content
@@ -110,7 +110,7 @@ class TestFractionUpgrade:
         from latex_generator import build_paracol_content
         md = "$x^2 + y^2 = z^2$"
         result = build_paracol_content(md, [])
-        assert "$x^2 + y^2 = z^2$" in result
+        assert r"\(x^2 + y^2 = z^2\)" in result
 
 
 class TestLatexEscaping:
@@ -130,13 +130,13 @@ class TestLatexEscaping:
         from latex_generator import build_paracol_content
         md = "公式 $E=mc^2$ 是正确的。"
         result = build_paracol_content(md, [])
-        assert "$E=mc^2$" in result
+        assert r"\(E=mc^2\)" in result
 
     def test_display_math_preserved(self):
         from latex_generator import build_paracol_content
         md = "$$F = ma$$\n其中 F 为力。"
         result = build_paracol_content(md, [])
-        assert "$$F = ma$$" in result
+        assert r"\[F = ma\]" in result
 
 
 class TestImageHandling:

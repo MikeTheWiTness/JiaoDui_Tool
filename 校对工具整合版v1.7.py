@@ -9,29 +9,111 @@
 """
 
 import os, re, json, base64, time, shutil, subprocess, threading, zipfile, sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 from pathlib import Path
 import requests
 try:
     from pydantic import BaseModel, Field
-    _PYDANTIC_OK = True
 except ImportError:
-    _PYDANTIC_OK = False
+    BaseModel, Field = None, None  # pydantic optional, used only as LangChain tool args_schema
 import subject_config
 
 # ========================= 路径工具 =========================
-def _parse_proofread_md(text: str):
-    """从 LLM 返回的 Markdown 校对结果中提取结构化数据"""
-    if not text or not text.strip():
+def _circle_to_int(ch: str) -> int | None:
+    """①②③... → 1,2,3..."""
+    code = ord(ch)
+    if 0x2460 <= code <= 0x2473:
+        return code - 0x2460 + 1
+    return None
+
+
+def _parse_marker_num(s: str) -> int:
+    """'①' → 1, '1' → 1  （圈号数字和 ASCII 数字统一转换）"""
+    n = _circle_to_int(s[0])
+    if n is not None:
+        return n
+    return int(s)
+
+
+def _parse_inline_format(text: str, summary: str) -> dict | None:
+    """解析新格式：### 标记原文 ... ### 修改原因 ..."""
+    # 分离两个 section
+    m = re.search(r'\n###\s*修改原因\s*\n', text)
+    if not m:
         return None
-    text = text.strip()
-    summary = ""
-    first_line = text.split("\n")[0].strip()
-    for kw in ["严重错误", "一般问题", "轻微问题", "无问题"]:
-        if kw in first_line:
-            summary = kw
-            break
+    marked_section = text[:m.start()]
+    reasons_section = text[m.end():]
+
+    # 去掉总结行和 ### 标记原文 头
+    marked_section = re.sub(r'^.+?\n', '', marked_section, count=1)  # 去掉总结行
+    marked_section = marked_section.lstrip('\n')  # 去掉可能的前导空行
+    marked_section = re.sub(r'^###\s*标记原文\s*\n?', '', marked_section)
+    # 去掉 LLM 偶尔添加的编号/内容前缀行
+    marked_section = re.sub(r'^编号：.+\n', '', marked_section)
+    marked_section = re.sub(r'^内容：\n?', '', marked_section)
+
+    # 截断：去除「优化建议」等多余内容
+    reasons_section = re.split(r'\n###\s', reasons_section)[0]
+    # 提取原因：支持 ①... ②-⑤... 或 1.... 2-4.... 两种格式
+    reasons = {}
+    # 先尝试圈号格式
+    pattern_circled = r'([①-⑳](?:-([①-⑳]))?)\s*(.+?)(?=\n[①-⑳]|\n\d+[\.\)]|\n\n|\Z)'
+    if re.search(r'(?:^|\n)[①-⑳]', reasons_section):
+        for rm in re.finditer(pattern_circled, reasons_section, re.DOTALL):
+            sn = _circle_to_int(rm.group(1)[0])
+            en = _circle_to_int(rm.group(2)) if rm.group(2) else sn
+            rt = rm.group(3).strip()
+            for n in range(sn, (en or sn) + 1):
+                reasons[n] = rt
+    else:
+        # ASCII 数字格式：1.  2-5.  6)  7 （数字+空格，无标点）
+        pattern_ascii = r'(\d+)(?:\s*[-–]\s*(\d+))?\s*[\.\)\s]\s*(.+?)(?=\n\d+[\.\)\s]|\n\n|\Z)'
+        for rm in re.finditer(pattern_ascii, reasons_section, re.DOTALL):
+            sn = int(rm.group(1))
+            en = int(rm.group(2)) if rm.group(2) else sn
+            rt = rm.group(3).strip()
+            # 跳过明显不是原因的匹配（如纯数字行）
+            if not rt:
+                continue
+            for n in range(sn, en + 1):
+                reasons[n] = rt
+
+    # 提取标记 【N原文|改为】，构建 corrections
+    corrections = []
+    seen_nums = set()
+
+    def _extract(marker):
+        num = _parse_marker_num(marker.group(1))
+        orig = marker.group(2)
+        corr = marker.group(3).strip() if marker.group(3) else ""
+        if num not in seen_nums:
+            seen_nums.add(num)
+            corrections.append({
+                "num": num,
+                "type": "text",
+                "original": orig,
+                "correction": corr,
+                "reason": reasons.get(num, ""),
+            })
+        return ""
+
+    # 去掉标记后得到纯净原文（用于旧版兼容）
+    _clean_marked = re.sub(r'【(\d+)\|([^|]*?)\|([^】]*?)】', _extract, marked_section)
+    corrections.sort(key=lambda x: x.get("num", 0))
+
+    if not summary and not corrections:
+        return None
+    return {
+        "corrections": corrections,
+        "summary": summary or "无问题",
+        "marked_text": marked_section.replace('\n', '\\n'),  # 保留标记的原文（用于 PDF 渲染）
+    }
+
+
+def _parse_old_format(text: str, summary: str) -> dict | None:
+    """解析旧格式：### 修改 N ..."""
     blocks = re.split(r"\n?(?:###+\s*修改\s*\d+)\s*\n", text)
     corrections = []
     for block in blocks[1:]:
@@ -75,16 +157,42 @@ def _parse_proofread_md(text: str):
     return {"corrections": corrections, "summary": summary or "无问题"}
 
 
+def _parse_proofread_md(text: str):
+    """从 LLM 返回的 Markdown 校对结果中提取结构化数据。
+    自动识别新旧两种格式。
+    """
+    if not text or not text.strip():
+        return None
+    text = text.strip()
+    summary = ""
+    first_line = text.split("\n")[0].strip()
+    for kw in ["严重错误", "一般问题", "轻微问题", "无问题"]:
+        if kw in first_line:
+            summary = kw
+            break
+
+    # 新格式：### 标记原文 + ### 修改原因（有内联标记）
+    if "### 标记原文" in text and re.search(r'【\d+\|.*\|[^】]*】', text):
+        result = _parse_inline_format(text, summary)
+        if result:
+            return result
+
+    # 旧格式：### 修改 N（向后兼容）
+    return _parse_old_format(text, summary)
+
+
 def _extract_json(text: str):
     """兼容旧接口：从 LLM 文本中提取结构化数据"""
     return _parse_proofread_md(text)
 
 
-def _save_proofread_json(res: str, q_dir: str):
-    """尝试从 LLM 返回结果中提取 JSON 并保存为 _校对数据.json"""
+def _save_proofread_json(res: str, q_dir: str, tool_calls: list | None = None):
+    """尝试从 LLM 返回结果中提取结构化数据并保存为 _校对数据.json"""
     data = _extract_json(res)
     if data is None:
         return False
+    if tool_calls:
+        data["tool_calls"] = tool_calls
     json_path = os.path.join(q_dir, "_校对数据.json")
     try:
         with open(json_path, "w", encoding="utf-8") as f:
@@ -92,6 +200,69 @@ def _save_proofread_json(res: str, q_dir: str):
         return True
     except Exception:
         return False
+
+
+def _proofread_one_question(api_url, api_key, model, q_dir, q_name, is_knowledge,
+                            prompt, subject, subject_tools, generate_pdf):
+    """加载单题数据 → 调用 API → 保存结果。在并行线程中执行。
+
+    Returns: {"success": bool, "result": str, "error": str}
+    """
+    # --- 读取 md ---
+    md_content = ""
+    for f in os.listdir(q_dir):
+        if f.endswith(".md"):
+            with open(os.path.join(q_dir, f), 'r', encoding='utf-8') as fm:
+                md_content = fm.read()
+            break
+    if not md_content:
+        return {"success": False, "result": "", "error": "未找到 md 文件"}
+
+    # --- 读取图片 ---
+    images_b64 = []
+    img_dir = os.path.join(q_dir, "images")
+    if os.path.exists(img_dir):
+        for img_file in os.listdir(img_dir):
+            if not img_file.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
+                continue
+            img_path = os.path.join(img_dir, img_file)
+            if os.path.getsize(img_path) > MAX_FILE_SIZE:
+                continue
+            try:
+                with open(img_path, "rb") as fi:
+                    b64 = base64.b64encode(fi.read()).decode()
+                ext = img_file.lower().split('.')[-1]
+                mime = ("image/png" if ext == "png"
+                        else "image/jpeg" if ext in ("jpg", "jpeg")
+                        else "image/gif")
+                images_b64.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}"}
+                })
+            except Exception:
+                continue
+
+    # --- 调用 API ---
+    try:
+        res, tool_calls = call_api(api_url, api_key, model, md_content, images_b64,
+                                   q_name, prompt, tools=subject_tools, subject=subject)
+    except Exception as e:
+        return {"success": False, "result": "", "error": str(e), "tool_calls": []}
+
+    # --- 保存结果 ---
+    if "API调用失败" not in res:
+        if generate_pdf:
+            md_path = os.path.join(q_dir, "_校对报告.md")
+            try:
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write(res)
+            except Exception:
+                pass
+            _save_proofread_json(res, q_dir, tool_calls)
+        return {"success": True, "result": res, "tool_calls": tool_calls, "error": None}
+    else:
+        err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
+        return {"success": False, "result": "", "error": err_detail, "tool_calls": []}
 
 
 def _app_dir():
@@ -257,9 +428,11 @@ def save_env_config(api_url, api_key, model_name):
 
 # ========================= 日志（GUI 注入） =========================
 _log_func = None
+_log_lock = threading.Lock()
 def log(msg):
     if _log_func:
-        _log_func(msg)
+        with _log_lock:
+            _log_func(msg)
 
 # ==================== 工具一：讲义管线 ====================
 
@@ -284,6 +457,15 @@ def fix_latex_escapes(md_file):
     content = content.replace(r'\right\)', r'\right)')
     content = content.replace(r'\left\[', r'\left[')
     content = content.replace(r'\right\]', r'\right]')
+    # 修复非数学内容的独立 \[ 和 \]（Pandoc 转义的方括号）
+    def _fix_escaped_brackets(content):
+        def _repl(m):
+            inner = m.group(1)
+            if re.search(r'[\$\\\^_]', inner):
+                return m.group(0)
+            return '[' + inner + ']'
+        return re.sub(r'\\\[([^\]]*?)\\\]', _repl, content)
+    content = _fix_escaped_brackets(content)
     for esc, orig in [(r'\^','^'), (r'\#','#'), (r'\~','~'), (r'\&','&'),
                        (r'\%','%'), (r'\*','*'), (r'\+','+'), (r'\-','-'),
                        (r'\=','='), (r'\|','|'), (r'\!','!'), (r"\'","'")]:
@@ -328,10 +510,13 @@ def fix_floating_images(md_file):
     lines = content.split("\n")
     fixed = False
 
-    for i, line in enumerate(lines):
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         # 匹配 A. ![test] 模式（Pandoc 默认 alt 文本为 "test"）
         m = re.match(r"^A\.\s*!\[test\]\(([^)]+)\)\s*(\{[^}]*\})?\s*(.*)", line)
         if not m:
+            i += 1
             continue
 
         img_path = m.group(1)
@@ -346,12 +531,17 @@ def fix_floating_images(md_file):
                 break
 
         if has_img_in_options:
+            i += 1
             continue
 
-        # 修复：图片独立成行，选项 A 恢复正常
+        # 修复：图片独立成行，放在 A 前面
         img_line = f"![]({img_path}){img_attrs}"
-        lines[i] = f"A.                                  {option_text}" if option_text else line
+        if option_text:
+            lines[i] = f"A.                                  {option_text}"
+        else:
+            lines[i] = f"A.                                  "
         lines.insert(i, img_line)
+        i += 2  # 跳过图片行和新 A 行
         fixed = True
 
     if fixed:
@@ -692,6 +882,10 @@ def split_by_question_numbers(md_file, output_root, base_name):
         c = sdir / fname; return c if c.exists() else None
 
     total_copied = [0]; total_missing = [0]
+
+    def is_title(l):
+        return bool(re.match(r'^\*\*.*\*\*$', l.strip()))
+
     for idx, block in enumerate(blocks, start=1):
         if answer_mode == "inline":
             start_ans = start_exp = None
@@ -704,14 +898,10 @@ def split_by_question_numbers(md_file, output_root, base_name):
                 exp = block[start_exp:] if start_exp is not None else []
             else:
                 stem = block; ans = []; exp = []
-            def is_title(l):
-                return bool(re.match(r'^\*\*.*\*\*$', l.strip()))
             stem = [l for l in stem if not is_title(l)]
             final_lines = stem + ans + exp
         else:
             stem = block
-            def is_title(l):
-                return bool(re.match(r'^\*\*.*\*\*$', l.strip()))
             stem = [l for l in stem if not is_title(l)]
             if end_answers and idx in end_answers:
                 final_lines = stem + end_answers[idx]['explanation']
@@ -830,11 +1020,14 @@ def get_full_knowledge_prompt(subject, level=None):
 # 启动时默认加载高中物理提示词（与默认学段学科一致）
 SYSTEM_PROMPT = get_full_question_prompt("物理", "高中")
 KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理", "高中")
-MAX_RETRY = 2; TIME_OUT = 480; QUESTION_INTERVAL = 1; MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_RETRY = 2; TIME_OUT = 480; BATCH_SIZE = 10; MAX_FILE_SIZE = 10 * 1024 * 1024
 
 def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None, subject=None):
-    """调用 LLM API，支持可选的符号计算工具调用"""
+    """调用 LLM API，支持可选的符号计算工具调用。
+    Returns: (response_text: str, tool_calls: list[dict])
+    """
     err_msg = ""
+    tool_calls_log = []
     tool_instances = tools or []
     openai_tools = [_tool_to_openai(t) for t in tool_instances] if tool_instances else None
     chat_url = api_url.rstrip("/")
@@ -842,6 +1035,7 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, t
         chat_url += "/chat/completions"
 
     for retry in range(MAX_RETRY + 1):
+        tool_calls_log.clear()
         try:
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -852,7 +1046,8 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, t
             ]
             payload = {
                 "model": model, "messages": messages,
-                "temperature": 0.3, "reasoning_effort": "high"
+                "temperature": 0.3, "reasoning_effort": "high",
+                "max_tokens": 8192
             }
             if openai_tools:
                 payload["tools"] = openai_tools
@@ -865,15 +1060,13 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, t
             # 处理 tool calls 循环（语文10轮——网页搜索；理科20轮——复杂公式多步验证）
             max_loops = 10 if subject == "语文" else 20
             loop = 0
-            while choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
+            while choice.get("finish_reason") == "tool_calls" or choice.get("message", {}).get("tool_calls"):
                 if loop >= max_loops:
                     log(f"   ⚠️ 工具调用超限（{max_loops}轮），自动重试无工具模式...")
-                    # 重新调用，不带工具
                     payload_no_tools = {**payload, "tools": None, "tool_choice": None}
                     resp = requests.post(chat_url, json=payload_no_tools, headers=headers, timeout=TIME_OUT)
                     resp.raise_for_status()
-                    return resp.json()["choices"][0]["message"]["content"]
-                # 将 assistant 消息（含 tool_calls）加入历史
+                    return resp.json()["choices"][0]["message"]["content"], tool_calls_log
                 messages.append(choice["message"])
                 for tc in choice["message"]["tool_calls"]:
                     tool_name = tc["function"]["name"]
@@ -882,25 +1075,29 @@ def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, t
                     except json.JSONDecodeError:
                         args = {}
                     result = _execute_tool(tool_instances, tool_name, args)
+                    tool_calls_log.append({
+                        "tool": tool_name,
+                        "args": args,
+                        "result": result[:200]
+                    })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": result[:4000]  # 限制结果长度
+                        "content": result[:4000]
                     })
                     log(f"   🔧 {tool_name}({json.dumps(args, ensure_ascii=False)[:120]})")
-                # 继续调用
                 resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]
                 loop += 1
 
-            return choice["message"]["content"]
+            return choice["message"]["content"], tool_calls_log
         except Exception as e:
             err_msg = str(e)
             if retry < MAX_RETRY:
                 log(f"⚠️ {q_title} 第{retry+1}次重试...")
                 time.sleep(2)
-    return f"**API调用失败：**\n{err_msg}"
+    return f"**API调用失败：**\n{err_msg}", []
 
 def collect_paper_dirs(base_path):
     """收集指定路径下的试卷子目录"""
@@ -947,6 +1144,10 @@ class IntegratedApp:
 
         # PDF 输出选项
         self.generate_pdf = tk.BooleanVar(value=True)
+
+        # 并行校对选项
+        self.parallel_enabled = tk.BooleanVar(value=True)
+        self.parallel_count = tk.StringVar(value="10")
 
         # 文件列表（转换用）
         self.file_list = []
@@ -1028,6 +1229,10 @@ class IntegratedApp:
         ttk.Separator(f1, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Checkbutton(f1, text="生成 LaTeX PDF 校对报告",
                         variable=self.generate_pdf).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(f1, text="并行校对",
+                        variable=self.parallel_enabled).pack(side=tk.LEFT, padx=4)
+        ttk.Entry(f1, textvariable=self.parallel_count, width=3).pack(side=tk.LEFT)
+        ttk.Label(f1, text="题/批").pack(side=tk.LEFT)
 
         # --- 第2行：学段+学科选择 ---
         f_subj = ttk.Frame(self.root, padding=(10, 0, 10, 5))
@@ -1467,81 +1672,87 @@ class IntegratedApp:
                     elif item == "知识":
                         knowledge_dir = full
 
-                question_dirs.sort(key=lambda x: int(''.join(
-                    [c for c in os.path.basename(x) if c.isdigit()]) or 0))
+                question_dirs.sort(key=lambda x: (
+                    int(re.findall(r'\d+', os.path.basename(x))[0])
+                    if re.findall(r'\d+', os.path.basename(x)) else 9999,
+                    os.path.basename(x)))
 
                 all_dirs = question_dirs[:]
                 if knowledge_dir is not None:
                     all_dirs.append(knowledge_dir)
 
-                for q_dir in all_dirs:
-                    if self.task_interrupt: break
-                    q_name = os.path.basename(q_dir)
-                    is_knowledge = (q_name == "知识")
-                    task_type = "知识" if is_knowledge else "题目"
-                    log(f"校对{task_type}：{q_name}")
+                subject = self.current_subject.get()
+                subject_tools = SUBJECT_TOOLS.get(subject, [])
+                generate_pdf = self.generate_pdf.get()
+                use_parallel = self.parallel_enabled.get()
+                try:
+                    batch_size = int(self.parallel_count.get())
+                    if batch_size < 1: batch_size = 1
+                except ValueError:
+                    batch_size = BATCH_SIZE
 
-                    # 读取 md
-                    md_content = ""
-                    for f in os.listdir(q_dir):
-                        if f.endswith(".md"):
-                            with open(os.path.join(q_dir, f), 'r', encoding='utf-8') as fm:
-                                md_content = fm.read()
-                            break
-                    if not md_content:
-                        log(f"   ⚠️ 未找到 md 文件，跳过")
-                        continue
+                if use_parallel and len(all_dirs) > 1:
+                    # ====== 并行模式 ======
+                    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                        for batch_start in range(0, len(all_dirs), batch_size):
+                            if self.task_interrupt:
+                                break
+                            batch = all_dirs[batch_start:batch_start + batch_size]
+                            batch_num = batch_start // batch_size + 1
+                            total_batches = (len(all_dirs) + batch_size - 1) // batch_size
+                            log(f"  --- 第{batch_num}/{total_batches}批（{len(batch)}题）提交中 ---")
 
-                    # 读取图片
-                    images_b64 = []
-                    img_dir = os.path.join(q_dir, "images")
-                    if os.path.exists(img_dir):
-                        for img_file in os.listdir(img_dir):
-                            if img_file.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
-                                img_path = os.path.join(img_dir, img_file)
-                                if os.path.getsize(img_path) > MAX_FILE_SIZE:
-                                    log(f"   ⚠️ 跳过图片 {img_file}：>10MB")
-                                    continue
+                            future_map = {}
+                            for q_dir in batch:
+                                q_name = os.path.basename(q_dir)
+                                is_knowledge = (q_name == "知识")
+                                task_type = "知识" if is_knowledge else "题目"
+                                log(f"  ⏳ 提交{task_type}：{q_name}")
+                                prompt = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
+                                future = executor.submit(
+                                    _proofread_one_question,
+                                    api_url, api_key, model, q_dir, q_name, is_knowledge,
+                                    prompt, subject, subject_tools, generate_pdf
+                                )
+                                future_map[future] = (q_dir, q_name, is_knowledge)
+
+                            for future in as_completed(future_map):
+                                q_dir, q_name, is_knowledge = future_map[future]
+                                task_type = "知识" if is_knowledge else "题目"
                                 try:
-                                    with open(img_path, "rb") as fi:
-                                        b64 = base64.b64encode(fi.read()).decode()
-                                    ext = img_file.lower().split('.')[-1]
-                                    mime = "image/png" if ext == "png" else "image/jpeg" if ext in ("jpg","jpeg") else "image/gif"
-                                    images_b64.append({
-                                        "type": "image_url",
-                                        "image_url": {"url": f"data:{mime};base64,{b64}"}
-                                    })
+                                    data = future.result()
+                                    if data["success"]:
+                                        self.proofread_result[q_dir] = data["result"]
+                                        paper_results[q_dir] = data["result"]
+                                        log(f"   ✅ {q_name} {task_type}校对完成")
+                                    else:
+                                        log(f"   ❌ {q_name} {task_type}校对失败：{data['error']}")
                                 except Exception as e:
-                                    log(f"   ❌ 图片读取失败 {img_file}: {e}")
+                                    log(f"   ❌ {q_name} 异常：{e}")
 
-                    prompt = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
-                    subject = self.current_subject.get()
-                    subject_tools = SUBJECT_TOOLS.get(subject, [])
-                    res = call_api(api_url, api_key, model, md_content, images_b64, q_name, prompt, tools=subject_tools, subject=subject)
-                    self.proofread_result[q_dir] = res
-                    paper_results[q_dir] = res
-
-                    if "API调用失败" in res:
-                        err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
-                        log(f"   ❌ {q_name} 校对失败：{err_detail}")
-                    else:
-                        if self.generate_pdf.get():
-                            # PDF 模式：保存原始 Markdown + JSON + 最终生成 PDF
-                            md_path = os.path.join(q_dir, "_校对报告.md")
-                            try:
-                                with open(md_path, "w", encoding="utf-8") as f:
-                                    f.write(res)
-                            except Exception:
-                                pass
-
-                            json_saved = _save_proofread_json(res, q_dir)
-                            if json_saved:
-                                log(f"   ✅ {q_name} 校对完成")
-                            else:
-                                log(f"   ⚠️ {q_name} Markdown 解析失败（原始结果已保存至 _校对报告.md）")
-                        else:
+                            remaining = len(all_dirs) - (batch_start + len(batch))
+                            if remaining > 0 and not self.task_interrupt:
+                                log(f"  --- 第{batch_num}批完成，剩余{remaining}题 ---")
+                else:
+                    # ====== 串行模式 ======
+                    for q_dir in all_dirs:
+                        if self.task_interrupt:
+                            break
+                        q_name = os.path.basename(q_dir)
+                        is_knowledge = (q_name == "知识")
+                        task_type = "知识" if is_knowledge else "题目"
+                        log(f"校对{task_type}：{q_name}")
+                        prompt = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
+                        data = _proofread_one_question(
+                            api_url, api_key, model, q_dir, q_name, is_knowledge,
+                            prompt, subject, subject_tools, generate_pdf
+                        )
+                        if data["success"]:
+                            self.proofread_result[q_dir] = data["result"]
+                            paper_results[q_dir] = data["result"]
                             log(f"   ✅ {q_name} 校对完成")
-                    time.sleep(QUESTION_INTERVAL)
+                        else:
+                            log(f"   ❌ {q_name} 校对失败：{data['error']}")
 
                 # 自动导出报告
                 if not self.task_interrupt and paper_results:

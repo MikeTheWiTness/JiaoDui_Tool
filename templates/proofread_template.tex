@@ -4,6 +4,9 @@
 \setCJKmainfont{SimSun}
 \setmainfont{Times New Roman}
 
+% === 符号回退字体（SimSun 不含 ★☆ 等特殊符号）===
+\newfontfamily{\fallbacksymbols}{Segoe UI Symbol}[Scale=MatchUppercase]
+
 % === 宏包 ===
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -13,6 +16,14 @@
 \usepackage{xcolor}
 \usepackage{fancyhdr}
 \usepackage{geometry}
+\usepackage{tikz}
+
+% === 红色圈号标记（TikZ 绘制，支持任意数字）===
+\newcommand{\redcircled}[1]{%
+  \tikz[baseline=(char.base)]{%
+    \node[shape=circle,draw=red,inner sep=0.3pt,text=red,line width=0.4pt,font=\fontsize{7pt}{7pt}\selectfont] (char) {#1};%
+  }%
+}
 
 % === 页面设置 ===
 \geometry{

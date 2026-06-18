@@ -19,7 +19,8 @@ Each subject × level combination (小学/初中/高中) has its own config in `
 ## Commands
 
 ```bash
-# Activate venv
+# Create and activate venv
+python -m venv venv
 source venv/Scripts/activate
 
 # Run the integrated multi-subject tool (GUI) — recommended

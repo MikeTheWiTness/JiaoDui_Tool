@@ -64,13 +64,15 @@ class TestMixed:
         assert r"\textit{$B$}" in r
 
     def test_pandoc_strikethrough(self):
-        """Pandoc ~~strikethrough~~ → 暂不处理但至少不崩溃"""
+        """Pandoc ~~strikethrough~~ → 暂不转换但输出不含原始波浪线"""
         r = build_paracol_content("~~删除文字~~", [])
-        # 当前不转换 ~~，但应能编译通过
+        # 当前不转换 ~~，但波浪线会被 LaTeX 转义为 \textasciitilde
+        assert "~~" not in r  # 原始双波浪线应被转义处理
         assert len(r) > 0
 
     def test_strikethrough_around_math(self):
         r = build_paracol_content("~~$A$~~", [])
+        assert "~~" not in r
         assert len(r) > 0
 
     def test_italic_in_paragraph(self):
@@ -81,7 +83,7 @@ class TestMixed:
     def test_no_false_positive_on_math_multiply(self):
         """数学模式中的 * 不应被转换"""
         r = build_paracol_content("$a * b$ 是乘法", [])
-        assert "$a * b$" in r
+        assert r"\(a * b\)" in r
         assert r"\textit" not in r
 
 
@@ -104,7 +106,7 @@ class TestEdgeCases:
 
     def test_star_in_math_preserved(self):
         r = build_paracol_content("$a*b$", [])
-        assert "$a*b$" in r
+        assert r"\(a*b\)" in r
 
     def test_four_stars(self):
         """**** 不应匹配"""

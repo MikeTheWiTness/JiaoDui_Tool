@@ -3,9 +3,9 @@ LaTeX 模板测试套件
 测试行为而非实现——验证模板可编译并正确渲染。
 """
 import os
+import shutil
 import subprocess
 import tempfile
-import shutil
 import pytest
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
@@ -70,7 +70,7 @@ class TestTemplateExists:
 # 编译辅助函数
 # ============================================================
 
-XELATEX = "C:/Program Files/texlive/2026/bin/windows/xelatex.exe"
+XELATEX = os.environ.get("XELATEX_PATH", shutil.which("xelatex") or "xelatex")
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output", "_test_latex")
 
 

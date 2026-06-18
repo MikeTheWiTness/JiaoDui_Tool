@@ -6,6 +6,7 @@ import threading
 import re
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 try:
     from pydantic import BaseModel, Field
@@ -15,20 +16,106 @@ except ImportError:
 import subject_config
 
 
+def _circle_to_int(ch: str) -> int | None:
+    """①②③... → 1,2,3..."""
+    code = ord(ch)
+    if 0x2460 <= code <= 0x2473:
+        return code - 0x2460 + 1
+    return None
+
+
+def _parse_marker_num(s: str) -> int:
+    """'①' → 1, '1' → 1"""
+    n = _circle_to_int(s[0])
+    if n is not None:
+        return n
+    return int(s)
+
+
+def _parse_inline_format(text: str, summary: str) -> dict | None:
+    """解析新格式：### 标记原文 ... ### 修改原因 ..."""
+    m = re.search(r'\n###\s*修改原因\s*\n', text)
+    if not m:
+        return None
+    marked_section = text[:m.start()]
+    reasons_section = text[m.end():]
+    # 截断：去除「优化建议」等多余内容
+    reasons_section = re.split(r'\n###\s', reasons_section)[0]
+
+    marked_section = re.sub(r'^.+?\n', '', marked_section, count=1)  # 去掉总结行
+    marked_section = marked_section.lstrip('\n')  # 去掉可能的前导空行
+    marked_section = re.sub(r'^###\s*标记原文\s*\n?', '', marked_section)
+    # 去掉 LLM 偶尔添加的编号/内容前缀行
+    marked_section = re.sub(r'^编号：.+\n', '', marked_section)
+    marked_section = re.sub(r'^内容：\n?', '', marked_section)
+
+    reasons = {}
+    if re.search(r'(?:^|\n)[①-⑳]', reasons_section):
+        for rm in re.finditer(r'([①-⑳](?:-([①-⑳]))?)\s*(.+?)(?=\n[①-⑳]|\n\d+[\.\)]|\n\n|\Z)', reasons_section, re.DOTALL):
+            sn = _circle_to_int(rm.group(1)[0])
+            en = _circle_to_int(rm.group(2)) if rm.group(2) else sn
+            rt = rm.group(3).strip()
+            for n in range(sn, (en or sn) + 1): reasons[n] = rt
+    else:
+        for rm in re.finditer(r'(\d+)(?:\s*[-–]\s*(\d+))?\s*[\.\)\s]\s*(.+?)(?=\n\d+[\.\)\s]|\n\n|\Z)', reasons_section, re.DOTALL):
+            sn = int(rm.group(1))
+            en = int(rm.group(2)) if rm.group(2) else sn
+            rt = rm.group(3).strip()
+            if not rt: continue
+            for n in range(sn, en + 1): reasons[n] = rt
+
+    corrections = []
+    seen_nums = set()
+
+    def _extract(marker):
+        num = _parse_marker_num(marker.group(1))
+        orig = marker.group(2)
+        corr = marker.group(3)
+        if num not in seen_nums:
+            seen_nums.add(num)
+            corrections.append({
+                "num": num,
+                "type": "text",
+                "original": orig,
+                "correction": corr,
+                "reason": reasons.get(num, ""),
+            })
+        return ""
+
+    re.sub(r'【(\d+)\|([^|]*?)\|([^】]*?)】', _extract, marked_section)
+    corrections.sort(key=lambda x: x.get("num", 0))
+
+    if not summary and not corrections:
+        return None
+    return {
+        "corrections": corrections,
+        "summary": summary or "无问题",
+        "marked_text": marked_section.replace('\n', '\\n'),
+    }
+
+
+def _parse_old_format(text: str, summary: str) -> dict | None:
+    """解析旧格式：### 修改 N ..."""
+    blocks = re.split(r"\n?(?:###+\s*修改\s*\d+)\s*\n", text)
+    corrections = []
+    for block in blocks[1:]:
+        corr = _parse_correction_block(block)
+        if corr and (corr.get("original") or corr.get("location")):
+            corr.setdefault("type", "text")
+            corr.setdefault("correction", "")
+            corr.setdefault("reason", "")
+            corrections.append(corr)
+    if not summary and not corrections:
+        return None
+    return {"corrections": corrections, "summary": summary or "无问题"}
+
+
 def _parse_proofread_md(text: str) -> dict | None:
     """从 LLM 返回的 Markdown 校对结果中提取结构化数据。
-
-    格式：
-        无问题 / 轻微问题 / 一般问题 / 严重错误
-        ### 修改 1
-        - **类型**: text
-        - **原文**: ``原文精确文字``
-        - **改为**: ``修改后文字``
-        - **原因**: 原因说明
+    自动识别新旧两种格式。
     """
     if not text or not text.strip():
         return None
-
     text = text.strip()
     summary = ""
     first_line = text.split("\n")[0].strip()
@@ -37,22 +124,12 @@ def _parse_proofread_md(text: str) -> dict | None:
             summary = kw
             break
 
-    # 拆分修改块
-    blocks = re.split(r"\n?(?:###+\s*修改\s*\d+)\s*\n", text)
-    corrections = []
+    if "### 标记原文" in text and re.search(r'【\d+\|.*\|[^】]*】', text):
+        result = _parse_inline_format(text, summary)
+        if result:
+            return result
 
-    for block in blocks[1:]:
-        corr = _parse_correction_block(block)
-        if corr and (corr.get("original") or corr.get("location")):
-            corr.setdefault("type", "text")
-            corr.setdefault("correction", "")
-            corr.setdefault("reason", "")
-            corrections.append(corr)
-
-    if not summary and not corrections:
-        return None
-
-    return {"corrections": corrections, "summary": summary or "无问题"}
+    return _parse_old_format(text, summary)
 
 
 def _parse_correction_block(block: str) -> dict | None:
@@ -272,8 +349,16 @@ KNOWLEDGE_SYSTEM_PROMPT = get_full_knowledge_prompt("物理", "高中")
 
 MAX_RETRY = 2
 TIME_OUT = 480
-QUESTION_INTERVAL = 1
+BATCH_SIZE = 10
 MAX_FILE_SIZE = 10 * 1024 * 1024
+
+# ========================= 日志（GUI 注入） =========================
+_log_func = None
+_log_lock = threading.Lock()
+def log(msg):
+    if _log_func:
+        with _log_lock:
+            _log_func(msg)
 
 class MultiSubjectProofreadApp:
     def __init__(self, root):
@@ -287,6 +372,11 @@ class MultiSubjectProofreadApp:
         self.proofread_result = {}
         self.current_level = tk.StringVar(value="高中")
         self.current_subject = tk.StringVar(value="物理")
+
+        # 并行校对选项
+        self.parallel_enabled = tk.BooleanVar(value=True)
+        self.parallel_count = tk.StringVar(value="10")
+
         self.api_config = self.load_config()
         self.setup_ui()
 
@@ -419,6 +509,9 @@ class MultiSubjectProofreadApp:
         self.log_text = scrolledtext.ScrolledText(frame_right, height=9)
         self.log_text.pack(fill=tk.BOTH, expand=True, pady=5)
 
+        global _log_func
+        _log_func = self.log
+
         frame_bottom = ttk.Frame(self.root, padding=10)
         frame_bottom.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -427,6 +520,11 @@ class MultiSubjectProofreadApp:
         self.stop_btn = ttk.Button(frame_bottom, text="中断任务", command=self.interrupt_task, state=tk.DISABLED)
         self.stop_btn.grid(row=0, column=1, padx=5)
         ttk.Button(frame_bottom, text="导出校对报告", command=self.export_report).grid(row=0, column=2, padx=5)
+
+        ttk.Checkbutton(frame_bottom, text="并行校对",
+                        variable=self.parallel_enabled).grid(row=0, column=3, padx=(20, 0))
+        ttk.Entry(frame_bottom, textvariable=self.parallel_count, width=3).grid(row=0, column=4, padx=2)
+        ttk.Label(frame_bottom, text="题/批").grid(row=0, column=5)
 
     def select_output_dir(self):
         path = filedialog.askdirectory(title="选择校对报告保存目录")
@@ -512,73 +610,146 @@ class MultiSubjectProofreadApp:
         t = threading.Thread(target=self.task_loop, daemon=True)
         t.start()
 
-    def call_api_with_retry(self, api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None):
-        tool_instances = tools or []
-        openai_tools = [_tool_to_openai(t) for t in tool_instances] if tool_instances else None
-        err_msg = ""
-        chat_url = api_url.rstrip("/")
-        if not chat_url.endswith("/chat/completions"):
-            chat_url += "/chat/completions"
-        for retry in range(MAX_RETRY + 1):
-            try:
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": [
-                        {"type": "text", "text": f"编号：{q_title}\n内容：\n{md_text}"},
-                        *images
-                    ]}
-                ]
-                payload = {
-                    "model": model, "messages": messages,
-                    "temperature": 0.3, "reasoning_effort": "high"
-                }
-                if openai_tools:
-                    payload["tools"] = openai_tools
 
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
+# 模块级 API 调用函数（由 _proofread_one_question 在并行线程中调用）
+def call_api(api_url, api_key, model, md_text, images, q_title, system_prompt, tools=None, subject=None):
+    """调用 LLM API，支持可选的符号计算工具调用。
+    Returns: (response_text: str, tool_calls: list[dict])
+    """
+    err_msg = ""
+    tool_calls_log = []
+    tool_instances = tools or []
+    openai_tools = [_tool_to_openai(t) for t in tool_instances] if tool_instances else None
+    chat_url = api_url.rstrip("/")
+    if not chat_url.endswith("/chat/completions"):
+        chat_url += "/chat/completions"
+
+    for retry in range(MAX_RETRY + 1):
+        tool_calls_log.clear()
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": [
+                    {"type": "text", "text": f"编号：{q_title}\n内容：\n{md_text}"},
+                    *images
+                ]}
+            ]
+            payload = {
+                "model": model, "messages": messages,
+                "temperature": 0.3, "reasoning_effort": "high",
+                "max_tokens": 8192
+            }
+            if openai_tools:
+                payload["tools"] = openai_tools
+
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
+            resp.raise_for_status()
+            choice = resp.json()["choices"][0]
+
+            max_loops = 10 if subject == "语文" else 20
+            loop = 0
+            while choice.get("finish_reason") == "tool_calls" or choice.get("message", {}).get("tool_calls"):
+                if loop >= max_loops:
+                    log(f"   ⚠️ 工具调用超限（{max_loops}轮），自动重试无工具模式...")
+                    payload_no_tools = {**payload, "tools": None, "tool_choice": None}
+                    resp = requests.post(chat_url, json=payload_no_tools, headers=headers, timeout=TIME_OUT)
+                    resp.raise_for_status()
+                    return resp.json()["choices"][0]["message"]["content"], tool_calls_log
+                messages.append(choice["message"])
+                for tc in choice["message"]["tool_calls"]:
+                    tool_name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = _execute_tool(tool_instances, tool_name, args)
+                    tool_calls_log.append({
+                        "tool": tool_name,
+                        "args": args,
+                        "result": result[:200]
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result[:4000]
+                    })
+                    log(f"   🔧 {tool_name}({json.dumps(args, ensure_ascii=False)[:120]})")
                 resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]
+                loop += 1
 
-                # 处理 tool calls 循环（理科最多5轮，语文最多10轮——网页搜索可能需要多次尝试）
-                max_loops = 10 if self.current_subject.get() == "语文" else 20
-                loop = 0
-                while choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
-                    if loop >= max_loops:
-                        self.log(f"   ⚠️ 工具调用超限（{max_loops}轮），自动重试无工具模式...")
-                        payload_no_tools = {**payload, "tools": None, "tool_choice": None}
-                        resp = requests.post(chat_url, json=payload_no_tools, headers=headers, timeout=TIME_OUT)
-                        resp.raise_for_status()
-                        return resp.json()["choices"][0]["message"]["content"]
-                    messages.append(choice["message"])
-                    for tc in choice["message"]["tool_calls"]:
-                        tool_name = tc["function"]["name"]
-                        try:
-                            args = json.loads(tc["function"]["arguments"])
-                        except json.JSONDecodeError:
-                            args = {}
-                        result = _execute_tool(tool_instances, tool_name, args)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": result[:4000]
-                        })
-                        self.log(f"   🔧 {tool_name}({json.dumps(args, ensure_ascii=False)[:120]})")
-                    resp = requests.post(chat_url, json=payload, headers=headers, timeout=TIME_OUT)
-                    resp.raise_for_status()
-                    choice = resp.json()["choices"][0]
-                    loop += 1
+            return choice["message"]["content"], tool_calls_log
+        except Exception as e:
+            err_msg = str(e)
+            if retry < MAX_RETRY:
+                log(f"⚠️ {q_title} 第{retry+1}次重试...")
+                time.sleep(2)
+    return f"**API调用失败：**\n{err_msg}", []
 
-                return choice["message"]["content"]
-            except Exception as e:
-                err_msg = str(e)
-                if retry < MAX_RETRY:
-                    self.log(f"⚠️ {q_title} 第{retry + 1}次请求超时，正在重试...")
-                    time.sleep(2)
-        return f"**API调用失败：**\n错误信息：{err_msg}"
+
+def _proofread_one_question(api_url, api_key, model, q_dir, q_name, is_knowledge,
+                            prompt, subject, subject_tools):
+    """加载单题数据 → 调用 API → 保存结果。在并行线程中执行。
+
+    Returns: {"success": bool, "result": str, "error": str}
+    """
+    # --- 读取 md ---
+    md_content = ""
+    for f in os.listdir(q_dir):
+        if f.endswith(".md"):
+            with open(os.path.join(q_dir, f), 'r', encoding='utf-8') as fm:
+                md_content = fm.read()
+            break
+    if not md_content:
+        return {"success": False, "result": "", "error": "未找到 md 文件"}
+
+    # --- 读取图片 ---
+    images_b64 = []
+    img_dir = os.path.join(q_dir, "images")
+    if os.path.exists(img_dir):
+        for img_file in os.listdir(img_dir):
+            if not img_file.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
+                continue
+            img_path = os.path.join(img_dir, img_file)
+            if os.path.getsize(img_path) > MAX_FILE_SIZE:
+                continue
+            try:
+                with open(img_path, "rb") as fi:
+                    b64 = base64.b64encode(fi.read()).decode()
+                ext = img_file.lower().split('.')[-1]
+                mime = ("image/png" if ext == "png"
+                        else "image/jpeg" if ext in ("jpg", "jpeg")
+                        else "image/gif")
+                images_b64.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}"}
+                })
+            except Exception:
+                continue
+
+    # --- 调用 API ---
+    try:
+        res, tool_calls = call_api(api_url, api_key, model, md_content, images_b64,
+                                   q_name, prompt, tools=subject_tools, subject=subject)
+    except Exception as e:
+        return {"success": False, "result": "", "error": str(e), "tool_calls": []}
+
+    # --- 保存结果 ---
+    if "API调用失败" not in res:
+        md_path = os.path.join(q_dir, "_校对报告.md")
+        try:
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(res)
+        except Exception:
+            pass
+        _save_proofread_json(res, q_dir, tool_calls)
+        return {"success": True, "result": res, "tool_calls": tool_calls, "error": None}
+    else:
+        err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
+        return {"success": False, "result": "", "error": err_detail, "tool_calls": []}
+
 
     def task_loop(self):
         api_url = self.var_api_url.get().strip()
@@ -614,69 +785,75 @@ class MultiSubjectProofreadApp:
                 if knowledge_dir is not None:
                     all_dirs.append(knowledge_dir)
 
-                for q_dir in all_dirs:
-                    if self.task_interrupt:
-                        break
-                    q_name = os.path.basename(q_dir)
-                    is_knowledge = (q_name == "知识")
-                    task_type = "知识" if is_knowledge else "题目"
+                use_parallel = self.parallel_enabled.get()
+                try:
+                    batch_size = int(self.parallel_count.get())
+                    if batch_size < 1: batch_size = 1
+                except ValueError:
+                    batch_size = BATCH_SIZE
 
-                    self.log(f"正在校对{task_type}：{q_name}（超时上限{TIME_OUT}s）")
+                if use_parallel and len(all_dirs) > 1:
+                    # ====== 并行模式 ======
+                    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                        for batch_start in range(0, len(all_dirs), batch_size):
+                            if self.task_interrupt:
+                                break
+                            batch = all_dirs[batch_start:batch_start + batch_size]
+                            batch_num = batch_start // batch_size + 1
+                            total_batches = (len(all_dirs) + batch_size - 1) // batch_size
+                            self.log(f"  --- 第{batch_num}/{total_batches}批（{len(batch)}题）提交中 ---")
 
-                    md_content = ""
-                    for f in os.listdir(q_dir):
-                        if f.endswith(".md"):
-                            with open(os.path.join(q_dir, f), "r", encoding="utf-8") as f_md:
-                                md_content = f_md.read()
-                            break
+                            future_map = {}
+                            for q_dir in batch:
+                                q_name = os.path.basename(q_dir)
+                                is_knowledge = (q_name == "知识")
+                                task_type = "知识" if is_knowledge else "题目"
+                                self.log(f"  ⏳ 提交{task_type}：{q_name}")
+                                prompt_to_use = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
+                                future = executor.submit(
+                                    _proofread_one_question,
+                                    api_url, api_key, model, q_dir, q_name, is_knowledge,
+                                    prompt_to_use, subject, subject_tools
+                                )
+                                future_map[future] = (q_dir, q_name, is_knowledge)
 
-                    images_base64 = []
-                    img_dir = os.path.join(q_dir, "images")
-                    if os.path.exists(img_dir):
-                        for img_file in os.listdir(img_dir):
-                            if img_file.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
-                                img_path = os.path.join(img_dir, img_file)
-                                file_size = os.path.getsize(img_path)
-                                if file_size > MAX_FILE_SIZE:
-                                    self.log(f"⚠️ 跳过图片 {img_file}：大小 {file_size / 1024 / 1024:.2f}MB 超过 10MB 限制")
-                                    continue
+                            for future in as_completed(future_map):
+                                q_dir, q_name, is_knowledge = future_map[future]
+                                task_type = "知识" if is_knowledge else "题目"
                                 try:
-                                    with open(img_path, "rb") as f_img:
-                                        img_b64 = base64.b64encode(f_img.read()).decode()
-                                    ext = img_file.lower().split('.')[-1]
-                                    mime = "image/png" if ext == "png" else "image/gif" if ext == "gif" else "image/jpeg"
-                                    images_base64.append({
-                                        "type": "image_url",
-                                        "image_url": {"url": f"data:{mime};base64,{img_b64}"}
-                                    })
+                                    data = future.result()
+                                    if data["success"]:
+                                        self.proofread_result[q_dir] = data["result"]
+                                        paper_results[q_dir] = data["result"]
+                                        self.log(f"   ✅ {q_name} {task_type}校对完成")
+                                    else:
+                                        self.log(f"   ❌ {q_name} {task_type}校对失败：{data['error']}")
                                 except Exception as e:
-                                    self.log(f"❌ 读取图片失败 {img_file}: {str(e)}")
+                                    self.log(f"   ❌ {q_name} 异常：{e}")
 
-                    prompt_to_use = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
-                    res = self.call_api_with_retry(api_url, api_key, model, md_content, images_base64, q_name, prompt_to_use, tools=subject_tools)
-
-                    self.proofread_result[q_dir] = res
-                    paper_results[q_dir] = res
-
-                    if "API调用失败" in res:
-                        err_detail = res.replace("**API调用失败：**\n", "").strip()[:200]
-                        self.log(f"❌ {q_name} {task_type}校对失败：{err_detail}")
-                    else:
-                        # 保存原始 Markdown 校对结果到题目目录
-                        md_path = os.path.join(q_dir, "_校对报告.md")
-                        try:
-                            with open(md_path, "w", encoding="utf-8") as f:
-                                f.write(res)
-                        except Exception:
-                            pass
-
-                        json_saved = _save_proofread_json(res, q_dir)
-                        if json_saved:
-                            self.log(f"✅ {q_name} {task_type}校对完成")
+                            remaining = len(all_dirs) - (batch_start + len(batch))
+                            if remaining > 0 and not self.task_interrupt:
+                                self.log(f"  --- 第{batch_num}批完成，剩余{remaining}题 ---")
+                else:
+                    # ====== 串行模式 ======
+                    for q_dir in all_dirs:
+                        if self.task_interrupt:
+                            break
+                        q_name = os.path.basename(q_dir)
+                        is_knowledge = (q_name == "知识")
+                        task_type = "知识" if is_knowledge else "题目"
+                        self.log(f"正在校对{task_type}：{q_name}")
+                        prompt_to_use = KNOWLEDGE_SYSTEM_PROMPT if is_knowledge else SYSTEM_PROMPT
+                        data = _proofread_one_question(
+                            api_url, api_key, model, q_dir, q_name, is_knowledge,
+                            prompt_to_use, subject, subject_tools
+                        )
+                        if data["success"]:
+                            self.proofread_result[q_dir] = data["result"]
+                            paper_results[q_dir] = data["result"]
+                            self.log(f"   ✅ {q_name} 校对完成")
                         else:
-                            self.log(f"⚠️ {q_name} {task_type} Markdown 解析失败（原始结果已保存至 _校对报告.md）")
-
-                    time.sleep(QUESTION_INTERVAL)
+                            self.log(f"   ❌ {q_name} 校对失败：{data['error']}")
 
                 if not self.task_interrupt and paper_results:
                     self.auto_export_paper_report(paper_path, paper_results, output_dir)

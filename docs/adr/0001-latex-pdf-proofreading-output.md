@@ -2,7 +2,11 @@
 
 ## Status
 
-proposed
+superseded by [ADR 0002](0002-markdown-proofread-format.md)
+
+<!-- The JSON structured-output approach documented below was replaced by Markdown `### 修改 N` format.
+     Reason: doubao model frequently produced malformed JSON. Markdown parsing via `_parse_proofread_md()`
+     proved significantly more reliable while still extracting the same structured data (`_校对数据.json`). -->
 
 ## Decision
 

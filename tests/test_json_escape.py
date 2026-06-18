@@ -5,6 +5,8 @@ import pytest
 
 
 def _load_parser():
+    # 通过 importlib 动态加载独立校对工具中的解析器
+    # 注：该脚本没有 import-time GUI 副作用，加载安全
     spec = importlib.util.spec_from_file_location(
         "proofread_gui",
         os.path.join(os.path.dirname(__file__), "..", "API校对单讲拆分v1.7.py")
