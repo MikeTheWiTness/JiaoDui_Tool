@@ -4,15 +4,40 @@ LaTeX .tex 生成模块
 
 左栏：原文 + 编号标记（\\corrmark{文字}{编号}），右栏：编号 + 原因说明。
 """
-import json
 import itertools
+import json
 import os
 import re
+import sys
 
 _counter = itertools.count(1)
 
-TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
-TEMPLATE_FILE = os.path.join(TEMPLATE_DIR, "proofread_template.tex")
+_TEMPLATE_FILE = None
+
+
+def _get_template_file():
+    """返回 proofread_template.tex 的绝对路径，兼容 PyInstaller 新旧版本。"""
+    global _TEMPLATE_FILE
+    if _TEMPLATE_FILE is not None:
+        return _TEMPLATE_FILE
+    # 开发模式：模块所在目录下的 templates/
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "proofread_template.tex"),
+    ]
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后：
+        # 旧版 (5.x) data 在 exe 同级 → exe_dir/templates/...
+        # 新版 (6.x) data 在 _internal/ → exe_dir/_internal/templates/...
+        exe_dir = os.path.dirname(sys.executable)
+        candidates.insert(0, os.path.join(exe_dir, "_internal", "templates", "proofread_template.tex"))
+        candidates.insert(0, os.path.join(exe_dir, "templates", "proofread_template.tex"))
+    for p in candidates:
+        if os.path.isfile(p):
+            _TEMPLATE_FILE = p
+            return _TEMPLATE_FILE
+    # 报清楚错误
+    searched = "\n  ".join(candidates)
+    raise FileNotFoundError(f"找不到 proofread_template.tex，已搜索:\n  {searched}")
 
 _LATEX_SPECIAL = [
     ("\\", r"\textbackslash "),
@@ -44,6 +69,19 @@ def _fix_escaped_brackets(text: str) -> str:
     return re.sub(r'\\\[([^\]]*?)\\\]', _repl, text)
 
 
+def _escape_unescaped(text: str, chars: str) -> str:
+    r"""转义未转义的特殊字符。已转义的（前面是反斜杠）不再重复转义。
+
+    例：'100%' → r'100\%'，r'100\%'（已转义）→ 不变。
+    避免 LLM 输出的 r'\%' 被二次转义成 r'\\%'（在 LaTeX 里 \\ 是换行，
+    会破坏数学模式）。
+    """
+    if not chars:
+        return text
+    char_class = re.escape(chars)
+    return re.sub(r'(?<!\\)[' + char_class + r']', lambda m: '\\' + m.group(0), text)
+
+
 def _escape_preserve_math(text: str) -> str:
     parts = re.split(r"(\$\$[\s\S]*?\$\$|\$[^$]*?\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\))", text)
     result = []
@@ -56,19 +94,25 @@ def _escape_preserve_math(text: str) -> str:
             inner = re.sub(r'([一-鿿㐀-䶿豈-﫿]+)',
                            r'\\text{\1}', inner)
             inner = inner.replace(r"\frac", r"\dfrac")
+            inner = _escape_unescaped(inner, '%#')
             part = r"\[" + inner + r"\]"
         elif part.startswith(r"\["):
-            # 已是 \[...\] 格式的显示数学，直接保留
-            pass
+            # 已是 \[...\] 格式的显示数学，转义 % 和 #（LaTeX 注释/参数符）
+            inner = part[2:-2]
+            inner = _escape_unescaped(inner, '%#')
+            part = r"\[" + inner + r"\]"
         elif part.startswith(r"\("):
-            # 已是 \(...\) 格式的行内数学，直接保留
-            pass
+            # 已是 \(...\) 格式的行内数学，转义 % 和 #
+            inner = part[2:-2]
+            inner = _escape_unescaped(inner, '%#')
+            part = r"\(" + inner + r"\)"
         elif part.startswith("$"):
             # inline math: $...$ → \(...\)
             inner = part[1:-1]
             inner = re.sub(r'([一-鿿㐀-䶿豈-﫿]+)',
                            r'\\text{\1}', inner)
             inner = inner.replace(r"\frac", r"\dfrac")
+            inner = _escape_unescaped(inner, '%#')
             part = r"\(" + inner + r"\)"
         else:
             part = _escape_text(part)
@@ -91,24 +135,46 @@ def _newline_to_latex(text: str) -> str:
 
 
 def _extract_images(text: str) -> tuple[str, dict[str, str]]:
-    """提取 Markdown 图片为占位符，返回 (处理后文本, {占位符: LaTeX代码})"""
+    """提取图片为占位符，返回 (处理后文本, {占位符: LaTeX代码})。
+
+    覆盖三种语法：
+    - Markdown: `![](path)` 和 `![](path){width="X" height="Y"}`
+    - HTML: `<img src="path" ...>`（Pandoc 偶尔产出，URL 可能含 & 等特殊字符）
+      对 HTML img，本地路径（无 ://）转为 includegraphics；
+      远程 URL（http(s)://）xelatex 无法直接获取，替换为提示文字。
+    """
     img_map = {}
 
-    def _repl(m):
+    def _make_img_placeholder(path: str) -> str:
         key = f"IMAGEPLACEHOLDER{next(_counter)}"
-        path = m.group(1)
-        img_map[key] = (
-            "\\\\\n\\includegraphics[width=\\linewidth,keepaspectratio]{" + path + "}"
-        )
+        if "://" in path:
+            img_map[key] = "\\\\\n\\fbox{\\parbox{0.9\\linewidth}{\\centering [远程图片省略]}}"
+        else:
+            img_map[key] = (
+                "\\\\\n\\includegraphics[width=\\linewidth,keepaspectratio]{" + path + "}"
+            )
         return key
+
+    def _md_repl(m):
+        return _make_img_placeholder(m.group(1))
+
+    def _html_repl(m):
+        path = m.group(1) or m.group(2) or m.group(3)
+        return _make_img_placeholder(path)
 
     # ![](path){width="X" height="Y"}
     text = re.sub(
         r"!\[.*?\]\((.*?)\)\s*\{width=\"[^\"]*\"\s+height=\"[^\"]*\"\}",
-        _repl, text,
+        _md_repl, text,
     )
     # ![](path)
-    text = re.sub(r"!\[.*?\]\((.*?)\)", _repl, text)
+    text = re.sub(r"!\[.*?\]\((.*?)\)", _md_repl, text)
+    # <img src="path" ...>  ——  匹配双引号、单引号、无引号三种形式
+    text = re.sub(
+        r'<img\s+[^>]*?src=(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))[^>]*?>',
+        _html_repl, text,
+        flags=re.IGNORECASE,
+    )
     return text, img_map
 
 
@@ -128,6 +194,47 @@ def _extract_md_formatting(text: str, placeholder_map: dict[str, str]) -> str:
     text = re.sub(r"\*\*(.+?)\*\*", _bold_repl, text)
     text = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", _italic_repl, text)
     return text
+
+
+def _rewrite_unresolvable_images(para_content: str, available_files: set[str]) -> str:
+    r"""把 \includegraphics{...} 里无法解析的路径替换为占位提示框。
+
+    背景：LLM 校对员有时会在 marked_text 中插入虚构的图片引用
+    （如 ../_resources/42761a09440b4797b4392b3b9573e036.png），拆分工具找不到
+    图片时会原样保留路径。这些路径在 xelatex 编译时会触发
+    "Unable to load picture or PDF file" 错误并导致 PDF 损坏。
+
+    Args:
+        para_content: build_paracol_content 的输出（含 \includegraphics{...}）
+        available_files: 可用的图片文件名集合（不含路径）。凡是 \includegraphics
+            引用的文件名不在此集合中的，一律替换为占位提示框。
+
+    Returns:
+        处理后的 para_content —— 所有无法解析的图片引用都被替换为
+        \fbox{[图片缺失: 文件名]} 提示。
+    """
+    if not available_files:
+        # 无可用图片 —— 所有 \includegraphics 都应替换
+        pass
+
+    def _check_includegraphics(m):
+        full = m.group(0)
+        path = m.group(1).strip()
+        # 取文件名部分（去掉任何路径前缀）
+        fname = os.path.basename(path)
+        if fname in available_files:
+            return full
+        # 无法解析 —— 替换为占位提示框
+        # 用 sanitize 后的 fname 避免特殊字符破坏 LaTeX
+        safe_fname = fname.replace("_", r"\_").replace("%", r"\%").replace("#", r"\#")
+        # "\\\\" 是 Python 源码 2 个反斜杠 = LaTeX 的 \\ 换行
+        # "\n" 是真实换行，便于阅读 .tex 源码
+        # "\fbox{...}" 是 LaTeX 命令
+        return "\\\\\n\\fbox{\\parbox{0.9\\linewidth}{\\centering [图片缺失: " + safe_fname + r"]}}"
+
+    # 匹配 \includegraphics[选项]{路径}  ——  保留选项，但替换整个命令
+    return re.sub(r"\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}",
+                  _check_includegraphics, para_content)
 
 
 def _restore_placeholders(text: str, placeholder_map: dict[str, str]) -> str:
@@ -238,12 +345,16 @@ def _apply_markers(md_content: str, corrections: list[dict]) -> tuple[str, list[
     result = md_content
     for start, end, corr in positioned:
         num = corr["num"]
-        marker = r"\textsuperscript{\textcolor{red}{\redcircled{" + str(num) + r"}}}"
         if _in_math(result, start):
+            # 数学模式内：只加上标圈号（\colorbox 在数学模式内无效）
             close = _find_math_close(result, end)
+            marker = r"\textsuperscript{\textcolor{red}{\redcircled{" + str(num) + r"}}}"
             result = result[:close+1] + marker + result[close+1:]
         else:
-            result = result[:end] + marker + result[end:]
+            # 文本模式：红色底色高亮 + 圈号
+            result = (result[:start]
+                      + r"\corrmark{" + result[start:end] + r"}{" + str(num) + r"}"
+                      + result[end:])
 
     return result, numbered
 
@@ -277,7 +388,41 @@ def _format_right_entry(corr: dict) -> str:
     return f"{cc} {reason}"
 
 
-_INLINE_MARKER_RE = re.compile(r'【([\d①-⑳]+)\|([^|]*?)\|([^】]*?)】')
+def _merge_split_math_blocks(text: str) -> str:
+    r"""修复被内联标记切开的 $ 数学块，特别是 \left...\right 配对分裂。
+
+    当 LLM 在 $\frac{d}{dx}\left($【7|$...$|$...$】$\right)$ 中插入
+    $...$ 包裹的标记时，剥离 $ 后变成：
+      $\frac{d}{dx}\left($<stripped_orig>KEY$\right)$
+    其中 $ 块 1 有空闲 \left（无匹配 \right），$ 块 2 有空闲 \right
+    （无匹配 \left）。需要合并两个相邻 $ 块为一个。
+    """
+    def _has_unpaired_left(s):
+        return len(re.findall(r'\\left[({\[\|.]', s)) > len(re.findall(r'\\right[)\]}\|.]', s))
+
+    def _has_unpaired_right(s):
+        return len(re.findall(r'\\right[)\]}\|.]', s)) > len(re.findall(r'\\left[({\[\|.]', s))
+
+    # 匹配相邻的 $...$$...$ 块（两个 $ 块中间无实质内容）
+    # 第二个 $ 可能紧接在第一个 $ 之后，或中间有空白/占位符
+    pattern = re.compile(r'(\$[^$]+\$)\s*(\$[^$]+\$)')
+
+    def _merge_repl(m):
+        left_block = m.group(1)
+        right_block = m.group(2)
+        left_inner = left_block[1:-1]
+        right_inner = right_block[1:-1]
+        if _has_unpaired_left(left_inner) and _has_unpaired_right(right_inner):
+            # 合并：去掉中间的 $$
+            return "$" + left_inner + right_inner + "$"
+        return m.group(0)
+
+    # 多轮替换直到没有更多可合并的
+    prev = None
+    while prev != text:
+        prev = text
+        text = pattern.sub(_merge_repl, text)
+    return text
 
 # 数字 → 圈号 Unicode 字符映射（1-20）
 _CIRCLED_NUMS = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳'
@@ -288,6 +433,9 @@ def _circled_char(n: int) -> str:
     if 1 <= n <= len(_CIRCLED_NUMS):
         return _CIRCLED_NUMS[n - 1]
     return str(n)
+
+
+_INLINE_MARKER_RE = re.compile(r'【([\d①-⑳]+)\|([^|]*?)\|([^】]*?)】')
 
 
 def _parse_marker_num(s: str) -> int:
@@ -327,15 +475,119 @@ def _process_inline_markers(md_text: str, corrections: list[dict],
                 "correction": corr,
                 "reason": reason_map.get(num, ""),
             })
-        key = f"INLINEMARKER{num}"
-        placeholder_map[key] = (
-            r"\textsuperscript{\textcolor{red}{\redcircled{"
-            + str(num) + r"}}}"
-        )
-        return orig + key
 
-    processed = _INLINE_MARKER_RE.sub(_repl, md_text)
+        # 剥离 $ 定界符。处理策略取决于标记位置：
+        # - 标记在 $...$ 内 → 裸数学内容 + 上标圈号（数学模式内不能放 \colorbox）
+        # - 标记在文本中 → \corrmark{\(inner\)}{N} 红色底色高亮 + 圈号
+        if orig.startswith("$") and orig.endswith("$") and len(orig) > 2:
+            inner = orig[1:-1]
+            before_marker = md_text[:m.start()]
+            in_math = (before_marker.count("$") % 2 == 1)
+            if in_math:
+                # 数学模式内：裸内容 + 上标圈号（保持现有行为）
+                math_key = f"MATHPLACEHOLDER{num}"
+                placeholder_map[math_key] = inner
+                key = f"INLINEMARKER{num}"
+                placeholder_map[key] = (
+                    r"\textsuperscript{\textcolor{red}{\redcircled{"
+                    + str(num) + r"}}}"
+                )
+                return math_key + key
+            else:
+                # 文本模式：红色底色高亮 + 圈号
+                key = f"CORRMARK{num}"
+                placeholder_map[key] = (
+                    r"\corrmark{" + r"\(" + inner + r"\)" + r"}"
+                    + r"{" + str(num) + r"}"
+                )
+                return key
+
+        if orig.startswith("$$") and orig.endswith("$$") and len(orig) > 4:
+            inner = orig[2:-2]
+            before_marker = md_text[:m.start()]
+            in_math = (before_marker.count("$$") % 2 == 1)
+            if in_math:
+                math_key = f"MATHPLACEHOLDER{num}"
+                placeholder_map[math_key] = inner
+                key = f"INLINEMARKER{num}"
+                placeholder_map[key] = (
+                    r"\textsuperscript{\textcolor{red}{\redcircled{"
+                    + str(num) + r"}}}"
+                )
+                return math_key + key
+            else:
+                key = f"CORRMARK{num}"
+                placeholder_map[key] = (
+                    r"\corrmark{" + r"\[" + inner + r"\]" + r"}"
+                    + r"{" + str(num) + r"}"
+                )
+                return key
+
+        # 纯文本标记（无 $ 包裹）：红色底色高亮 + 圈号
+        key = f"CORRMARK{num}"
+        placeholder_map[key] = (
+            r"\corrmark{" + orig + r"}{" + str(num) + r"}"
+        )
+        return key
+
+    # 第一步：预处理——合并被 $...$ 包裹标记切开的相邻 $ 块。
+    # 模式：$<content1>$【N|$orig$|$corr$】$<content2>$
+    # 替换为：$<content1><orig_stripped>KEY<content2>$
+    # 这样 \left 和 \right 就不会被分到不同的 $ 块中。
+    def _pre_merge_dollar_markers(text):
+        def _merge_repl(m):
+            before = m.group(1)           # $<content1>$
+            after = m.group(6)            # $<content2>$  (group 2-5 are inline marker's nested groups)
+            marker = m.group(2)           # 【N|...|...】
+            # 解析标记内容
+            mm = _INLINE_MARKER_RE.match(marker)
+            if not mm:
+                return m.group(0)
+            num = _parse_marker_num(mm.group(1))
+            orig = mm.group(2)
+            corr = mm.group(3)
+            if num not in seen:
+                seen.add(num)
+                inline_corrections.append({
+                    "num": num,
+                    "type": "text",
+                    "original": orig,
+                    "correction": corr,
+                    "reason": reason_map.get(num, ""),
+                })
+            key = f"INLINEMARKER{num}"
+            placeholder_map[key] = (
+                r"\textsuperscript{\textcolor{red}{\redcircled{"
+                + str(num) + r"}}}"
+            )
+            # 剥离 orig 的 $ 定界符（已在合并后的 $ 块内，不需要 \(...\) 包裹）
+            inner = orig
+            if orig.startswith("$$") and orig.endswith("$$") and len(orig) > 4:
+                inner = orig[2:-2]
+            elif orig.startswith("$") and orig.endswith("$") and len(orig) > 2:
+                inner = orig[1:-1]
+            # 合并前后的 $ 块：去掉中间两个 $，保留前后的 $
+            return before[:-1] + inner + key + after[1:]
+
+        # 匹配：$<content>$【N|...|...】$<content>$
+        pre_pattern = re.compile(
+            r'(\$[^$]+\$)'
+            r'\s*(' + _INLINE_MARKER_RE.pattern + r')'
+            r'\s*(\$[^$]+\$)'
+        )
+        return pre_pattern.sub(_merge_repl, text)
+
+    processed = _pre_merge_dollar_markers(md_text)
+
+    # 第二步：处理剩余的普通内联标记
+    processed = _INLINE_MARKER_RE.sub(_repl, processed)
     inline_corrections.sort(key=lambda x: x["num"])
+
+    # 修复被 $ 剥离后残留的 split-math 问题：\left 和 \right 落在不同 $ 块
+    # 例：$\frac{d}{dx}\left($ 剥离后 → $\frac{d}{dx}\left(<inner>$KEY$\right)$
+    # 需要把中间的 $KEY$ 两边 $ 去掉，让 \left 和 \right 留在同一 $ 块
+    processed = _merge_split_math_blocks(processed)
+
     return processed, inline_corrections
 
 
@@ -431,11 +683,11 @@ def generate_tex(json_path: str, md_path: str, output_path: str) -> str:
 
     title = os.path.splitext(os.path.basename(md_path))[0]
 
-    with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
+    with open(_get_template_file(), "r", encoding="utf-8") as f:
         template = f.read()
 
     full_tex = template.replace("{{CONTENT}}", paracol_content)
-    full_tex = full_tex.replace(r"\title{校对报告}", r"\title{" + title + "}")
+    full_tex = full_tex.replace(r"\title{校对报告}", r"\title{" + title.replace("_", r"\_") + "}")
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -507,12 +759,18 @@ def generate_combined_pdf(lecture_dir: str, pdf_output_dir: str | None = None) -
 
         # 将图片路径从 ./images/ 改为 ./{题目名}/images/ 以避免跨题目冲突
         img_dir = os.path.join(subdir, "images")
+        available_files: set[str] = set()
         if os.path.isdir(img_dir):
             sec_img_prefix = f"./{section_title}/images/"
             para_content = para_content.replace("{./images/", "{" + sec_img_prefix)
             all_images[section_title] = {}
             for fname in os.listdir(img_dir):
                 all_images[section_title][fname] = os.path.join(img_dir, fname)
+                available_files.add(fname)
+
+        # 把无法解析的图片引用（如 LLM 虚构的 ../_resources/xxx.png）
+        # 替换为占位提示框，避免 xelatex 加载失败导致 PDF 损坏
+        para_content = _rewrite_unresolvable_images(para_content, available_files)
 
         sections.append(f"\\section*{{{section_title}}}\n{para_content}")
 
@@ -522,11 +780,11 @@ def generate_combined_pdf(lecture_dir: str, pdf_output_dir: str | None = None) -
     combined = ("\n\n" + chr(92) + "newpage\n\n").join(sections)
     lecture_name = os.path.basename(lecture_dir.rstrip("/\\"))
 
-    with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
+    with open(_get_template_file(), "r", encoding="utf-8") as f:
         template = f.read()
 
     full_tex = template.replace("{{CONTENT}}", combined)
-    full_tex = full_tex.replace(r"\title{校对报告}", r"\title{" + lecture_name + "}")
+    full_tex = full_tex.replace(r"\title{校对报告}", r"\title{" + lecture_name.replace("_", r"\_") + "}")
 
     if pdf_output_dir is None:
         pdf_output_dir = lecture_dir
@@ -543,8 +801,17 @@ def generate_combined_pdf(lecture_dir: str, pdf_output_dir: str | None = None) -
         # 图片映射传给编译器，由它复制到临时目录
         pdf_path = compile_to_pdf(tex_path, output_dir=pdf_output_dir, images_map=all_images)
         return pdf_path
-    except Exception:
-        return None
+    except Exception as e:
+        # 编译失败时，删除可能残留的 PDF（xelatex 在崩溃前可能已写出残缺 PDF）
+        # 避免用户误以为 PDF 生成成功
+        partial_pdf = os.path.join(pdf_output_dir, f"{safe_name}.pdf")
+        if os.path.isfile(partial_pdf):
+            try:
+                os.remove(partial_pdf)
+            except OSError:
+                pass
+        # 重新抛出，让调用方决定如何向用户展示错误
+        raise RuntimeError(f"LaTeX 编译失败：{e}") from e
 
 
 def generate_pdf_for_question(q_dir: str, pdf_output_dir: str | None = None) -> str | None:
@@ -569,5 +836,11 @@ def generate_pdf_for_question(q_dir: str, pdf_output_dir: str | None = None) -> 
         generate_tex(json_path, md_path, tex_path)
         pdf_path = compile_to_pdf(tex_path, output_dir=pdf_output_dir)
         return pdf_path
-    except Exception:
-        return None
+    except Exception as e:
+        partial_pdf = os.path.join(pdf_output_dir, f"{q_name}.pdf")
+        if os.path.isfile(partial_pdf):
+            try:
+                os.remove(partial_pdf)
+            except OSError:
+                pass
+        raise RuntimeError(f"LaTeX 编译失败：{e}") from e

@@ -25,6 +25,12 @@
   }%
 }
 
+% === 左栏标记：红色文字 + 圈号上标 ===
+% 不包裹任何盒子，纯文本颜色，天然支持 CJK + 数学换行
+\newcommand{\corrmark}[2]{%
+  \textcolor{red}{#1}\textsuperscript{\textcolor{red}{\redcircled{#2}}}%
+}
+
 % === 页面设置 ===
 \geometry{
   a4paper,

@@ -22,7 +22,21 @@ def _app_dir():
 
 
 def _app_path(rel):
-    return os.path.join(_app_dir(), rel)
+    """返回资源文件的绝对路径，兼容 PyInstaller 新旧版本 data 目录位置。
+
+    PyInstaller 5.x COLLECT 把 data 放在 exe 同级目录；
+    PyInstaller 6.x COLLECT 把 data 放在 _internal/ 里。
+    两处都尝试，优先 exe 同级（旧行为，也允许手动放置）。
+    """
+    primary = os.path.join(_app_dir(), rel)
+    if os.path.exists(primary):
+        return primary
+    # PyInstaller 6.x fallback
+    secondary = os.path.join(_app_dir(), "_internal", rel)
+    if os.path.exists(secondary):
+        return secondary
+    # 都不存在时返回 primary，让上层在需要时报清晰的错误
+    return primary
 
 
 # ========================= 路径常量 =========================

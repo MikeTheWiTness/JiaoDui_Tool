@@ -958,7 +958,8 @@ def find_pandoc():
 def check_pandoc():
     pandoc = find_pandoc()
     try:
-        r = subprocess.run([pandoc, "--version"], capture_output=True, text=True)
+        r = subprocess.run([pandoc, "--version"], capture_output=True, text=True,
+                           **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}))
         if r.returncode == 0:
             log(f"✅ Pandoc: {r.stdout.splitlines()[0]}")
             return True
@@ -978,7 +979,8 @@ def convert_with_pandoc(input_path, output_md, img_dir, use_mathjax=False):
         cmd.insert(3, "--mathjax")
     cmd.extend([input_path, "-o", output_md])
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}))
         return r.returncode == 0
     except Exception as e:
         log(f"   Pandoc 异常: {e}")
@@ -1208,12 +1210,12 @@ class IntegratedApp:
     # ===== UI =====
     def setup_ui(self):
         # --- 第0行：来源模式 ---
-        f0 = ttk.Frame(self.root, padding=10)
-        f0.pack(fill=tk.X)
-        ttk.Label(f0, text="来源模式：").pack(side=tk.LEFT)
-        ttk.Radiobutton(f0, text="讲义模式", variable=self.source_mode, value="讲义",
+        self.frame_source = ttk.Frame(self.root, padding=10)
+        self.frame_source.pack(fill=tk.X)
+        ttk.Label(self.frame_source, text="来源模式：").pack(side=tk.LEFT)
+        ttk.Radiobutton(self.frame_source, text="讲义模式", variable=self.source_mode, value="讲义",
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
-        ttk.Radiobutton(f0, text="试卷模式", variable=self.source_mode, value="试卷",
+        ttk.Radiobutton(self.frame_source, text="试卷模式", variable=self.source_mode, value="试卷",
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
 
         # --- 第1行：执行模式 ---
@@ -1226,24 +1228,28 @@ class IntegratedApp:
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
         ttk.Radiobutton(f1, text="仅校对", variable=self.exec_mode, value="仅校对",
                         command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
+        ttk.Radiobutton(f1, text="仅生成PDF", variable=self.exec_mode, value="仅生成PDF",
+                        command=self.on_mode_changed).pack(side=tk.LEFT, padx=4)
         ttk.Separator(f1, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
-        ttk.Checkbutton(f1, text="生成 LaTeX PDF 校对报告",
+        self.frame_pdf_options = ttk.Frame(self.root, padding=(10, 0, 10, 0))
+        self.frame_pdf_options.pack(fill=tk.X)
+        ttk.Checkbutton(self.frame_pdf_options, text="生成 LaTeX PDF 校对报告",
                         variable=self.generate_pdf).pack(side=tk.LEFT, padx=4)
-        ttk.Checkbutton(f1, text="并行校对",
+        ttk.Checkbutton(self.frame_pdf_options, text="并行校对",
                         variable=self.parallel_enabled).pack(side=tk.LEFT, padx=4)
-        ttk.Entry(f1, textvariable=self.parallel_count, width=3).pack(side=tk.LEFT)
-        ttk.Label(f1, text="题/批").pack(side=tk.LEFT)
+        ttk.Entry(self.frame_pdf_options, textvariable=self.parallel_count, width=3).pack(side=tk.LEFT)
+        ttk.Label(self.frame_pdf_options, text="题/批").pack(side=tk.LEFT)
 
         # --- 第2行：学段+学科选择 ---
-        f_subj = ttk.Frame(self.root, padding=(10, 0, 10, 5))
-        f_subj.pack(fill=tk.X)
-        ttk.Label(f_subj, text="学段：").pack(side=tk.LEFT)
-        self.level_combo = ttk.Combobox(f_subj, textvariable=self.current_level,
+        self.frame_subject = ttk.Frame(self.root, padding=(10, 0, 10, 5))
+        self.frame_subject.pack(fill=tk.X)
+        ttk.Label(self.frame_subject, text="学段：").pack(side=tk.LEFT)
+        self.level_combo = ttk.Combobox(self.frame_subject, textvariable=self.current_level,
                                         values=subject_config.LEVELS, state="readonly", width=6)
         self.level_combo.pack(side=tk.LEFT, padx=(0, 10))
         self.level_combo.bind("<<ComboboxSelected>>", self.on_level_changed)
-        ttk.Label(f_subj, text="校对学科：").pack(side=tk.LEFT)
-        self.subject_combo = ttk.Combobox(f_subj, textvariable=self.current_subject,
+        ttk.Label(self.frame_subject, text="校对学科：").pack(side=tk.LEFT)
+        self.subject_combo = ttk.Combobox(self.frame_subject, textvariable=self.current_subject,
                                           values=subject_config.get_subjects_for_level(self.current_level.get()),
                                           state="readonly", width=8)
         self.subject_combo.pack(side=tk.LEFT, padx=6)
@@ -1276,6 +1282,8 @@ class IntegratedApp:
                                             command=self.select_single_paper)
         self.btn_select_root = ttk.Button(self.frame_file_area, text="📂 选择根目录",
                                           command=self.select_root_for_proofread)
+        self.btn_select_pdf_folders = ttk.Button(self.frame_file_area, text="📂 选择拆分文件夹",
+                                                  command=self.select_pdf_folders)
 
         self.btn_add_files.pack(side=tk.LEFT, padx=4)
         self.btn_add_folder.pack(side=tk.LEFT, padx=4)
@@ -1340,9 +1348,28 @@ class IntegratedApp:
         exec_mode = self.exec_mode.get()
         source_mode = self.source_mode.get()
         is_proof_only = (exec_mode == "仅校对")
+        is_pdf_only = (exec_mode == "仅生成PDF")
 
-        # 转换设置区：仅校对时隐藏
-        if is_proof_only:
+        # 来源行：仅校对和仅生成PDF时隐藏
+        if is_proof_only or is_pdf_only:
+            self.frame_source.pack_forget()
+        else:
+            self.frame_source.pack(fill=tk.X, before=self.frame_list)
+
+        # 学段+学科行：仅生成PDF时隐藏
+        if is_pdf_only:
+            self.frame_subject.pack_forget()
+        else:
+            self.frame_subject.pack(fill=tk.X, before=self.frame_list)
+
+        # PDF checkbox / 并行选项：仅生成PDF时隐藏
+        if is_pdf_only:
+            self.frame_pdf_options.pack_forget()
+        else:
+            self.frame_pdf_options.pack(fill=tk.X, before=self.frame_list)
+
+        # 转换设置区：仅校对和仅生成PDF时隐藏
+        if is_proof_only or is_pdf_only:
             self.frame_convert_settings.pack_forget()
         else:
             self.frame_convert_settings.pack(fill=tk.X, before=self.frame_list)
@@ -1352,21 +1379,28 @@ class IntegratedApp:
                 self.frame_jy_options.pack_forget()
 
         # 文件区按钮
-        if is_proof_only:
-            self.btn_add_files.pack_forget()
-            self.btn_add_folder.pack_forget()
-            self.btn_clear.pack_forget()
+        self.btn_add_files.pack_forget()
+        self.btn_add_folder.pack_forget()
+        self.btn_clear.pack_forget()
+        self.btn_select_papers.pack_forget()
+        self.btn_select_root.pack_forget()
+        self.btn_select_pdf_folders.pack_forget()
+
+        if is_pdf_only:
+            self.btn_select_pdf_folders.pack(side=tk.LEFT, padx=4)
+            self.btn_clear.pack(side=tk.LEFT, padx=4)
+        elif is_proof_only:
             self.btn_select_papers.pack(side=tk.LEFT, padx=4)
             self.btn_select_root.pack(side=tk.LEFT, padx=4)
         else:
-            self.btn_select_papers.pack_forget()
-            self.btn_select_root.pack_forget()
             self.btn_add_files.pack(side=tk.LEFT, padx=4)
             self.btn_add_folder.pack(side=tk.LEFT, padx=4)
             self.btn_clear.pack(side=tk.LEFT, padx=4)
 
         # 统一操作按钮：根据模式切换文字和命令
-        if is_proof_only:
+        if is_pdf_only:
+            self.btn_action.config(text="📄 生成PDF", command=self.start_generate_pdf)
+        elif is_proof_only:
             self.btn_action.config(text="🚀 开始校对", command=self.start_proofread)
         elif exec_mode == "完整流程":
             self.btn_action.config(text="🚀 开始处理", command=self.start_full_pipeline)
@@ -1443,10 +1477,10 @@ class IntegratedApp:
         log(f"📂 从文件夹添加了 {added} 个文件")
 
     def clear_list(self):
-        if self.exec_mode.get() == "仅校对":
+        if self.exec_mode.get() in ("仅校对", "仅生成PDF"):
             self.proofread_list = []
             self.proofread_result = {}
-            log("🗑️ 已清空试卷清单")
+            log("🗑️ 已清空清单")
         else:
             self.file_list = []
             log("🗑️ 已清空文件列表")
@@ -1459,7 +1493,7 @@ class IntegratedApp:
     def refresh_listbox(self):
         self.list_box.delete(0, tk.END)
         exec_mode = self.exec_mode.get()
-        if exec_mode == "仅校对":
+        if exec_mode in ("仅校对", "仅生成PDF"):
             for i, (path, name) in enumerate(self.proofread_list, 1):
                 self.list_box.insert(tk.END, f"{i}. {name}")
         else:
@@ -1495,6 +1529,65 @@ class IntegratedApp:
                 self.proofread_list.append(entry); added += 1
         self.refresh_listbox()
         log(f"📂 已从根目录加载 {added} 套试卷到清单")
+
+    def select_pdf_folders(self):
+        """选择拆分文件夹（含第N题/板块N + _校对数据.json 的目录）"""
+        paths = filedialog.askdirectory(title="选择拆分文件夹（含 第N题/板块N + _校对数据.json）")
+        if not paths:
+            return
+        # askdirectory returns a single path, but user can call multiple times
+        path = paths
+        name = os.path.basename(path)
+        # 简单校验：目录下至少有一个第N题 或 板块N 子目录
+        subdirs = [e for e in os.listdir(path) if os.path.isdir(os.path.join(path, e))]
+        has_questions = any(re.match(r'第\d+题|板块\d+', e) for e in subdirs)
+        if not has_questions:
+            messagebox.showwarning("提示", f"「{name}」下没有识别到题目目录（第N题/板块N），请确认选择正确")
+            return
+        entry = (path, name)
+        if entry not in self.proofread_list:
+            self.proofread_list.append(entry)
+        self.refresh_listbox()
+        log(f"📂 已添加拆分文件夹到清单：{name}")
+
+    def start_generate_pdf(self):
+        """从已拆分的文件夹直接生成 LaTeX PDF"""
+        if not self.proofread_list:
+            messagebox.showwarning("提示", "请先选择拆分文件夹（含 第N题/板块N + _校对数据.json）")
+            return
+        self.task_running = True
+        self.task_interrupt = False
+        self.btn_action.config(state=tk.DISABLED)
+        self.btn_stop.config(state=tk.NORMAL)
+        self.proofread_result = {}
+
+        def _run():
+            from latex_generator import generate_combined_pdf
+            pdf_dir = os.path.join("output", "校对PDF")
+            total = len(self.proofread_list)
+            success = 0
+            for i, (dir_path, paper_name) in enumerate(self.proofread_list):
+                if self.task_interrupt:
+                    log("\n===== 任务已中断 =====")
+                    break
+                log(f"\n📄 [{i+1}/{total}] 正在生成 PDF：{paper_name}")
+                try:
+                    pdf_path = generate_combined_pdf(dir_path, pdf_dir)
+                    if pdf_path:
+                        log(f"   ✅ PDF 已生成：{pdf_path}")
+                        success += 1
+                    else:
+                        log(f"   ⚠️ 生成失败：未找到可用的校对数据")
+                except Exception as e:
+                    log(f"   ❌ 生成异常：{e}")
+            if not self.task_interrupt:
+                log(f"\n===== PDF 生成完成：{success}/{total} =====")
+            self.task_running = False
+            self.task_interrupt = False
+            self.root.after(0, lambda: self.btn_action.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.btn_stop.config(state=tk.DISABLED))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ===== 转换管线 =====
     def start_full_pipeline(self):

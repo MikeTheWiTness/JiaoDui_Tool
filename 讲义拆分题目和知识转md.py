@@ -39,7 +39,8 @@ def log_print(msg):
 def check_pandoc():
     """检查 Pandoc 是否安装"""
     try:
-        result = subprocess.run(["pandoc", "--version"], capture_output=True, text=True)
+        result = subprocess.run(["pandoc", "--version"], capture_output=True, text=True,
+                                 **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}))
         if result.returncode == 0:
             log_print("✅ Pandoc 已安装")
             log_print(f"   版本: {result.stdout.split(chr(10))[0]}")
@@ -69,7 +70,8 @@ def convert_with_pandoc(input_path, output_md, output_img_dir):
             "-o", output_md
         ]
         log_print(f"   执行 Pandoc: pandoc ... -o {os.path.basename(output_md)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                 **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}))
         if result.returncode == 0:
             return True
         else:
@@ -439,6 +441,9 @@ def split_md_into_questions(md_file, output_root, base_name, subject=None, level
             else:
                 log_print(f"      ⚠️ 未找到图片: {img_name} (源路径: {src})")
                 missing_count += 1
+                # 保留原路径，但 latex_generator 的 _rewrite_unresolvable_images
+                # 会在 PDF 生成阶段把它替换为 [图片缺失: xxx] 提示框。
+                # 不在这里改写是为了让题目 .md 仍能反映"原本引用的是什么"。
                 return f"![{alt}]({src})"
 
         new_content = img_pattern.sub(replace_img, content)

@@ -316,7 +316,8 @@ def split_md_into_questions(md_file, output_root, base_name):
 # ==================== Pandoc 转换 ====================
 def check_pandoc():
     try:
-        result = subprocess.run(["pandoc", "--version"], capture_output=True, text=True)
+        result = subprocess.run(["pandoc", "--version"], capture_output=True, text=True,
+                                 **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}))
         if result.returncode == 0:
             version_line = result.stdout.splitlines()[0]
             log(f"✅ Pandoc 已安装：{version_line}"
@@ -347,7 +348,8 @@ def convert_file(word_path):
         "-o", output_md,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                 **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}))
         if result.returncode == 0:
             post_process_md(output_md)
             return True, output_md, basename

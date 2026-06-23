@@ -36,6 +36,7 @@ def execute_code(code: str, timeout: int = 30) -> dict:
             input=code, env=env,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
+            **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}),
         )
         elapsed = int((time.monotonic() - start) * 1000)
 

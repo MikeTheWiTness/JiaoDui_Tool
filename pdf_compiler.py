@@ -72,17 +72,31 @@ def compile_to_pdf(tex_path: str, output_dir: str | None = None,
             f'-output-directory={tmpdir}', tmp_tex,
         ]
         with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
-            retcode = subprocess.call(cmd, timeout=60, cwd=tmpdir, stdout=log_f, stderr=subprocess.STDOUT)
+            retcode = subprocess.call(cmd, timeout=60, cwd=tmpdir, stdout=log_f, stderr=subprocess.STDOUT,
+                                      **(dict(creationflags=subprocess.CREATE_NO_WINDOW) if os.name == 'nt' else {}))
 
         tmp_pdf = os.path.join(tmpdir, f"{base}.pdf")
 
-        if not os.path.isfile(tmp_pdf) and retcode != 0:
-            log_tail = ""
-            if os.path.isfile(log_path):
-                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                    log_text = f.read()
-                error_lines = [ln for ln in log_text.splitlines() if ln.startswith("!")]
-                log_tail = "\n".join(error_lines[-20:]) or log_text[-2000:]
+        # 检测编译失败：
+        # 1. retcode != 0 且未生成 PDF —— 明显失败
+        # 2. 生成的 PDF 过小（< 1KB）—— xelatex 在 nonstopmode 下崩溃前
+        #    可能写出只含 PDF 头的残缺文件（曾导致用户看到"损坏的 PDF"）
+        # 3. 日志里出现 "Emergency stop" / "Runaway argument" 等致命错误标记
+        is_stub_pdf = (os.path.isfile(tmp_pdf)
+                       and os.path.getsize(tmp_pdf) < 1024)
+        has_fatal_error = False
+        log_text = ""
+        if os.path.isfile(log_path):
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                log_text = f.read()
+            fatal_markers = ("Emergency stop", "Runaway argument",
+                             "No pages of output", "xdvipdfmx:fatal",
+                             "fatal: Image inclusion failed")
+            has_fatal_error = any(m in log_text for m in fatal_markers)
+
+        if (not os.path.isfile(tmp_pdf) and retcode != 0) or is_stub_pdf or has_fatal_error:
+            error_lines = [ln for ln in log_text.splitlines() if ln.startswith("!")]
+            log_tail = "\n".join(error_lines[-20:]) or log_text[-2000:]
             raise RuntimeError(f"Compilation failed.\n{log_tail}")
 
         # 复制 PDF 到目标目录
