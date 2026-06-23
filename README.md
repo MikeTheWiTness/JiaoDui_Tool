@@ -41,13 +41,17 @@ K-12 全学科题目处理流水线 —— Word 转 Markdown → 智能拆分 �
 
 ```bash
 # 安装依赖
-pip install sympy requests
+pip install sympy requests langchain-core
 
 # 运行整合版（推荐，含转换 + 拆分 + 校对）
 python 校对工具整合版v1.7.py
 
-# 或运行独立校对工具（仅校对，适合已有拆分结果的目录）
+# 运行独立校对工具（仅校对，适合已有拆分结果的目录）
 python API校对单讲拆分v1.7.py
+
+# 打包为 exe（需要 PyInstaller）
+pip install pyinstaller
+python -m PyInstaller 校对工具v1.7.spec
 ```
 
 1. 点击 **⚙️ API 配置** 填写接口地址、密钥和模型名（自动保存到 `.env`）
@@ -56,6 +60,32 @@ python API校对单讲拆分v1.7.py
 4. 添加 Word 文件，点击**开始处理**
 
 ## 版本历史
+
+### v1.7.1 — PDF 鲁棒性修复 + 内联标记高亮 + 仅生成PDF 模式（2026-06）
+
+- **PDF 编译鲁棒性**（修复用户提报的 PDF 损坏问题）：
+  - `_escape_unescaped`：数学模式内 `%`/`#` 智能转义，防止 LLM 已转义的 `\%` 被二次转义为 `\\%`（曾导致 xelatex Runaway argument → 15 字节残缺 PDF）
+  - `_rewrite_unresolvable_images`：缺失/虚构的图片路径（LLM 幻觉、`../_resources/` 路径）替换为占位框，避免 xelatex `xdvipdfmx:fatal` 崩溃
+  - `_pre_merge_dollar_markers` + `_process_inline_markers`：合并被内联标记切开的 `\left...\right` 数学块，修复第35题公式渲染失败
+  - 内联标记 `$` 剥离：LLM 在 `$...$` 内插入的 `【N|$...$|$...$】` 标记不再拆断外层数学模式
+  - `compile_to_pdf`：检测残缺 PDF（< 1KB）和致命日志标记（`Emergency stop`、`Runaway argument` 等），抛出 RuntimeError 而非静默复制损坏输出
+  - `generate_combined_pdf`：编译失败时删除残留 stub PDF + 传播错误
+  - 标题下划线转义：`_` → `\_`（如 `第_1_讲` 不再触发 LaTeX 下标语法错误）
+- **左栏标记可视化**：
+  - 新增 `\corrmark{原文}{编号}` 命令：红色文字 + 红色圈号上标，天然支持 CJK + 数学换行
+  - `_apply_markers` 文本模式同步使用 `\corrmark` 包裹匹配范围
+  - 数学模式内保持仅圈号上标（`\textsuperscript`），不包盒子
+- **仅生成 PDF 模式**（GUI 新增第4个 RadioButton）：
+  - 从已拆分的题目目录（含 `第N题/` + `_校对数据.json`）直接生成 PDF，无需重新校对
+  - 选中后隐藏来源模式、学段/学科、转换设置
+  - 支持批量选择多个拆分文件夹
+- **打包兼容性**：
+  - `subject_config._app_path`：PyInstaller 6.x 回退到 `_internal/subjects/`
+  - `latex_generator._get_template_file`：同上处理模板路径
+  - 所有 subprocess 调用添加 `CREATE_NO_WINDOW`，消除 Windows 下弹黑窗
+- **HTML `<img>` 标签提取**：`_extract_images` 处理双引号/单引号/无引号 `src`，远程 URL 替换为提示框
+- **新增测试**：`test_pdf_pipeline_robustness.py`（84 个测试），覆盖转义、图片、内联标记、编译错误传播、端到端 xelatex 编译
+- **测试总数**：324 passed（+ 1 skipped）
 
 ### v1.7 — LaTeX PDF 双栏校对报告 + Markdown 结构化输出（2026-06）
 
@@ -110,6 +140,7 @@ python API校对单讲拆分v1.7.py
 ├── API校对单讲拆分v1.7.py        # 独立校对工具（仅校对，GUI）
 ├── 讲义拆分题目和知识转md.py    # 讲义拆分（独立运行，GUI）
 ├── 组卷网试卷转md.py            # 试卷拆分（独立运行，GUI）
+├── 校对工具v1.7.spec            # PyInstaller 打包配置
 ├── subject_config.py           # 统一配置加载模块（v1.6）
 ├── subjects/                   # 学段+学科配置（v1.6）
 │   ├── 小学/（语文、数学、英语、科学、道法）
@@ -121,9 +152,20 @@ python API校对单讲拆分v1.7.py
 ├── latex_generator.py           # LaTeX .tex 生成器
 ├── pdf_compiler.py              # XeLaTeX PDF 编译
 ├── templates/
-│   └── proofread_template.tex   # 双栏校对排版模板
-├── tests/                       # 测试套件（171 个测试）
+│   └── proofread_template.tex   # 双栏校对排版模板（含 \corrmark 标注命令）
+├── tests/                       # 测试套件（324 个测试）
+│   ├── test_pdf_pipeline_robustness.py  # PDF 全链路鲁棒性测试（84 个）
+│   ├── test_latex_generator.py
+│   ├── test_pdf_compiler.py
+│   ├── test_markdown_to_latex.py
+│   └── fixtures/                # 测试用图片素材
 ├── .env                           # API 配置
+├── dist/                          # 打包输出（PyInstaller）
+│   └── 校对工具v1.7/
+│       ├── 校对工具v1.7.exe
+│       ├── _internal/
+│       ├── subjects/
+│       └── templates/
 ├── CLAUDE.md
 └── output/
     ├── 拆题结果/
@@ -179,5 +221,9 @@ MODEL_NAME=doubao-seed-2-0-pro-260215
       section 模式 → 板块N/板块N.md + images/
   → AI 校对（学科+学段提示词 + 符号计算工具 + reasoning_effort=high）
   → 结构化数据（_校对数据.json） + 原始报告（_校对报告.md）
-  → LaTeX 双栏排版 → 汇总 PDF（可选）
+  → LaTeX 双栏排版：
+      _rewrite_unresolvable_images 验证图片路径
+      → \corrmark{原文}{N} 红色标记（左栏） + \correctionbox 蓝色建议（右栏）
+      → xelatex 编译（compile_to_pdf 含残缺 PDF 检测）
+  → 汇总 PDF（可选，GUI 支持"仅生成PDF"模式跳过校对直接编译）
 ```
